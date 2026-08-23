@@ -45,7 +45,7 @@ All commands are run from the `api/` directory.
 With the virtual environment activated, start the development server:
 
 ```powershell
-uvicorn main:app --reload
+uvicorn main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 The API will be available at http://127.0.0.1:8000 and the interactive docs at http://127.0.0.1:8000/docs.
