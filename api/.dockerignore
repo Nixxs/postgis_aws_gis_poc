@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local env / secrets - never bake into the image
+.env
+.env.*
+*.env
+
+# Tooling
+.git/
+.gitignore
+.vscode/
+*.md
+
+# Compose / infra (not needed inside the app image)
+docker-compose.yml
