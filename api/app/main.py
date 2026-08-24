@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 
-from app.database import database
+from app.database import database, initialize_database
 from app.routers.list_layers import router as list_layers
 from app.routers.describe_layer import router as describe_layer
 from app.config import config
@@ -25,6 +25,7 @@ async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("Starting api")
     await database.connect()
+    await initialize_database()
     yield
     await database.disconnect()
 
@@ -40,6 +41,28 @@ app.add_middleware(
 )
 
 app.add_middleware(CorrelationIdMiddleware)
+
+
+@app.get("/", tags=["health"])
+async def root():
+    return {"service": "postgis-api", "status": "ok", "docs": "/docs"}
+
+
+@app.get("/health", tags=["health"])
+async def health():
+    """Process health check used by the load balancer."""
+    return {"status": "ok"}
+
+
+@app.get("/ready", tags=["health"])
+async def ready():
+    """Readiness check that verifies the database connection."""
+    try:
+        await database.fetch_val("SELECT 1")
+    except Exception as exc:
+        logger.exception("Database readiness check failed")
+        raise HTTPException(status_code=503, detail="Database unavailable") from exc
+    return {"status": "ready"}
 
 # Include routers
 app.include_router(list_layers)

@@ -45,7 +45,16 @@ All commands are run from the `api/` directory.
 With the virtual environment activated, start the development server:
 
 ```powershell
-uvicorn main:app --reload --host 0.0.0.0 --port 8001
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 ```
 
 The API will be available at http://127.0.0.1:8000 and the interactive docs at http://127.0.0.1:8000/docs.
+
+### connecting to the deployed aws database:
+
+```powershell
+docker run --rm -it `
+  --mount "type=bind,source=$($PWD.Path)\global-bundle.pem,target=/global-bundle.pem,readonly" `
+  postgres:16 `
+  psql "host=dtp-aws-poc.c582u0iemihr.ap-southeast-2.rds.amazonaws.com port=5432 dbname=gis user=postgres sslmode=verify-full sslrootcert=/global-bundle.pem"
+```
