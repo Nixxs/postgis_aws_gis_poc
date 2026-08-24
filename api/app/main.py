@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 
-from app.database import database, initialize_database
+from app.database import database
 from app.routers.list_layers import router as list_layers
 from app.routers.describe_layer import router as describe_layer
 from app.config import config
@@ -25,7 +25,6 @@ async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("Starting api")
     await database.connect()
-    await initialize_database()
     yield
     await database.disconnect()
 
