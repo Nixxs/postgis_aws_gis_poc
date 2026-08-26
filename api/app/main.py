@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 from app.database import database
 from app.routers.list_layers import router as list_layers
 from app.routers.describe_layer import router as describe_layer
+from app.routers.unique_values import router as unique_values
 from app.config import config
 from app.logging_conf import configure_logging
 
@@ -66,6 +67,7 @@ async def ready():
 # Include routers
 app.include_router(list_layers)
 app.include_router(describe_layer)
+app.include_router(unique_values)
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler_logging(request, exc):

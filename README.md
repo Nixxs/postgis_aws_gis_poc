@@ -40,6 +40,12 @@ All commands are run from the `api/` directory.
    pip install -r requirements.txt
    ```
 
+### run the database in docker
+
+```
+docker compose --env-file ../.env up -d
+```
+
 ### Run the API
 
 With the virtual environment activated, start the development server:
