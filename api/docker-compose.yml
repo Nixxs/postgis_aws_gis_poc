@@ -20,5 +20,28 @@ services:
       timeout: 5s
       retries: 5
 
+  api:
+    build:
+      context: .
+    container_name: ${COMPOSE_PROJECT_NAME:-postgis_poc}_api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      ENV_STATE: ""
+      DB_HOST: db
+      DB_PORT: 5432
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 volumes:
   postgres_data:
