@@ -293,8 +293,8 @@ $taskDefinition = @{
     executionRoleArn = "arn:aws:iam::$($env:AWS_ACCOUNT_ID):role/$executionRoleName"
     networkMode = "awsvpc"
     requiresCompatibilities = @("FARGATE")
-    cpu = "512"
-    memory = "1024"
+    cpu = "1024"
+    memory = "2048"
     runtimePlatform = @{ operatingSystemFamily = "LINUX"; cpuArchitecture = "X86_64" }
     containerDefinitions = @(@{
         name = "api"

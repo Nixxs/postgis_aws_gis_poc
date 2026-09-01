@@ -51,6 +51,7 @@ logger = logging.getLogger(__name__)
 # Server-side cap on rows returned, mirroring Esri's maxRecordCount.
 MAX_RECORD_COUNT = 1000
 DEFAULT_RECORD_COUNT = 200
+MAX_BUFFER_METERS = 50000
 
 _ORDER_DIRECTIONS = {"ASC", "DESC"}
 
@@ -91,6 +92,13 @@ class QueryRequest(BaseModel):
     f: str = "json"
     geometry: dict | None = None
     spatialRel: str = "esriSpatialRelIntersects"
+    schema_name: str = Field(default="public", alias="schema")
+
+
+class SpatialQueryRequest(BaseModel):
+    layer: str
+    geometry: dict
+    buffer: float = 0
     schema_name: str = Field(default="public", alias="schema")
 
 
@@ -299,3 +307,41 @@ async def _query_geojson(table, layer, fields, geom_col, srid, where_sql, order_
         "resultOffset": offset,
         "resultRecordCount": limit,
     }
+
+
+@router.post("/spatial-query", status_code=200)
+async def spatial_query(body: SpatialQueryRequest):
+    """Return features intersecting a GeoJSON geometry buffered in metres."""
+    buffer_meters = min(max(float(body.buffer), 0), MAX_BUFFER_METERS)
+    geometry_json = json.dumps(body.geometry)
+    query_geometry_json = await database.fetch_val(
+        """
+        WITH input AS (
+            SELECT ST_SetSRID(ST_GeomFromGeoJSON(:geometry), 4326) AS geom
+        )
+        SELECT ST_AsGeoJSON(
+            CASE
+                WHEN :buffer_meters > 0
+                THEN ST_Buffer(geom::geography, :buffer_meters)::geometry
+                ELSE geom
+            END
+        )
+        FROM input
+        """,
+        {"geometry": geometry_json, "buffer_meters": buffer_meters},
+    )
+    if not query_geometry_json:
+        raise HTTPException(status_code=422, detail="invalid query geometry")
+
+    result = await query_layer(
+        QueryRequest(
+            layer=body.layer,
+            geometry=json.loads(query_geometry_json),
+            f="geojson",
+            resultRecordCount=MAX_RECORD_COUNT,
+            schema=body.schema_name,
+        )
+    )
+    result["bufferMeters"] = buffer_meters
+    result["queryGeometry"] = json.loads(query_geometry_json)
+    return result
