@@ -1,16 +1,19 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI, HTTPException
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
+from fastapi.responses import FileResponse
 
 from app.database import database
 from app.routers.list_layers import router as list_layers
 from app.routers.describe_layer import router as describe_layer
 from app.routers.unique_values import router as unique_values
 from app.routers.query import router as query
+from app.routers.tiles import router as tiles
 from app.config import config
 from app.logging_conf import configure_logging
 
@@ -65,11 +68,18 @@ async def ready():
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
     return {"status": "ready"}
 
+
+@app.get("/tile-demo", include_in_schema=False, response_class=FileResponse)
+async def tile_demo():
+    """Serve a minimal same-origin MapLibre demonstration page."""
+    return FileResponse(Path(__file__).parent / "static" / "mvt-demo.html")
+
 # Include routers
 app.include_router(list_layers)
 app.include_router(describe_layer)
 app.include_router(unique_values)
 app.include_router(query)
+app.include_router(tiles)
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler_logging(request, exc):

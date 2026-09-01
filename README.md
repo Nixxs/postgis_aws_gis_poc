@@ -56,6 +56,26 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8001
 
 The API will be available at http://127.0.0.1:8000 and the interactive docs at http://127.0.0.1:8000/docs.
 
+### Vector tiles
+
+Spatial layers are available as Mapbox Vector Tiles for MapLibre:
+
+```text
+GET /tiles/{layer}/{z}/{x}/{y}.mvt?schema=public&fields=id,name
+```
+
+The `fields` query parameter is optional and defaults to all non-geometry
+columns. The MapLibre source's `source-layer` must match `{layer}`:
+
+```javascript
+map.addSource("my-layer", {
+  type: "vector",
+  tiles: ["http://127.0.0.1:8001/tiles/my_table/{z}/{x}/{y}.mvt"],
+  minzoom: 0,
+  maxzoom: 22,
+});
+```
+
 ### connecting to the deployed aws database:
 
 ```powershell

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PostGIS MVT demo</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    body { font-family: system-ui, sans-serif; }
+    .panel {
+      position: absolute;
+      z-index: 1;
+      top: 12px;
+      left: 12px;
+      max-width: 360px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+    }
+    .panel strong, .panel span { display: block; }
+    .panel span { margin-top: 4px; color: #475569; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <strong>PostGIS MVT demo</strong>
+    <span id="status">Loading environmental significance tiles…</span>
+  </div>
+  <div id="map"></div>
+  <script>
+    const layerName = "au_vic_dtp_env_environmental_significance";
+    const status = document.getElementById("status");
+
+    const map = new maplibregl.Map({
+      container: "map",
+      center: [144.96, -37.81],
+      zoom: 8,
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: "raster",
+            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            attribution: "© OpenStreetMap contributors"
+          },
+          postgis: {
+            type: "vector",
+            tiles: [`${window.location.origin}/tiles/${layerName}/{z}/{x}/{y}.mvt`],
+            minzoom: 0,
+            maxzoom: 22
+          }
+        },
+        layers: [
+          { id: "osm", type: "raster", source: "osm" },
+          {
+            id: "planning-fill",
+            type: "fill",
+            source: "postgis",
+            "source-layer": layerName,
+            paint: {
+              "fill-color": "#7c3aed",
+              "fill-opacity": 0.35
+            }
+          },
+          {
+            id: "planning-outline",
+            type: "line",
+            source: "postgis",
+            "source-layer": layerName,
+            paint: {
+              "line-color": "#4c1d95",
+              "line-width": 1.5
+            }
+          }
+        ]
+      }
+    });
+
+    map.addControl(new maplibregl.NavigationControl(), "top-right");
+    map.on("idle", () => { status.textContent = "Production vector tiles loaded."; });
+    map.on("error", event => {
+      status.textContent = `Map error: ${event.error?.message || "tile request failed"}`;
+    });
+    map.on("click", "planning-fill", event => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      const properties = document.createElement("pre");
+      properties.textContent = JSON.stringify(feature.properties, null, 2);
+      new maplibregl.Popup()
+        .setLngLat(event.lngLat)
+        .setDOMContent(properties)
+        .addTo(map);
+    });
+    map.on("mouseenter", "planning-fill", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "planning-fill", () => { map.getCanvas().style.cursor = ""; });
+  </script>
+</body>
+</html>
