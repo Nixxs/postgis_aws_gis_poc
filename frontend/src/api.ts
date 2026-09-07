@@ -78,6 +78,34 @@ export function spatialQuery(layer: string, geometry: unknown, bufferMeters = 0)
   })
 }
 
+export type MeasurementPosition = [number, number]
+export interface MeasurementResult {
+  distance: number
+  units: 'metres'
+  sourceCrs: 'EPSG:4326'
+  measurementCrs: 'EPSG:7855'
+}
+
+export async function measureDistance(start: MeasurementPosition, end: MeasurementPosition, signal?: AbortSignal) {
+  const response = await fetch(`${API_BASE}/measure`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ start, end }),
+    signal,
+  })
+  if (!response.ok) {
+    if (response.status === 404) throw new Error('Measurement endpoint unavailable. Rebuild or deploy the API with the /measure route.')
+    const data = await response.json().catch(() => null)
+    const detail = data?.detail
+    throw new Error(typeof detail === 'string' ? detail : `Measurement failed (${response.status}). Check the selected coordinates and retry.`)
+  }
+  const result = await response.json() as MeasurementResult
+  if (!Number.isFinite(result.distance) || result.distance < 0 || result.units !== 'metres' || result.measurementCrs !== 'EPSG:7855') {
+    throw new Error('Unexpected measurement response. The API must return metres in EPSG:7855.')
+  }
+  return result
+}
+
 export function warmUp(layer: string): void {
   if (!layer) return
   fetch(`${API_BASE}/describe-layer/${encodeURIComponent(layer)}?id=${Date.now()}`, {

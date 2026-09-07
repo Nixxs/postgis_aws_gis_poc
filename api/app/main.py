@@ -14,6 +14,7 @@ from app.routers.describe_layer import router as describe_layer
 from app.routers.unique_values import router as unique_values
 from app.routers.query import router as query
 from app.routers.tiles import router as tiles
+from app.routers.measure import router as measure_router
 from app.config import config
 from app.logging_conf import configure_logging
 
@@ -80,6 +81,7 @@ app.include_router(describe_layer)
 app.include_router(unique_values)
 app.include_router(query)
 app.include_router(tiles)
+app.include_router(measure_router)
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler_logging(request, exc):

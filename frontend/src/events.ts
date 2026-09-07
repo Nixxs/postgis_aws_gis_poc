@@ -1,5 +1,12 @@
 import mitt from 'mitt'
-import type { FeatureCollection } from './api'
+import type { FeatureCollection, MeasurementPosition, MeasurementResult } from './api'
+
+export interface MeasureState {
+  status: 'unavailable' | 'idle' | 'drawing' | 'loading' | 'complete' | 'error'
+  points: MeasurementPosition[]
+  result?: MeasurementResult
+  error?: string
+}
 
 export interface LayerToggleEvent { id: string; visible: boolean }
 export interface QueryResultEvent { layer: string; geojson: FeatureCollection }
@@ -14,6 +21,10 @@ export interface SpatialDrawGeometryEvent { geometry: DrawGeometry }
 export interface MapZoomEvent { zoom: number }
 
 type Events = {
+  measureStart: void
+  measureClear: void
+  measureRetry: void
+  measureState: MeasureState
   layerToggle: LayerToggleEvent
   queryResult: QueryResultEvent
   queryResultMulti: QueryResultMultiEvent
@@ -30,6 +41,16 @@ type Events = {
 }
 
 const bus = mitt<Events>()
+
+export function emitMeasureStart() { bus.emit('measureStart') }
+export function onMeasureStart(fn: () => void): () => void { bus.on('measureStart', fn); return () => bus.off('measureStart', fn) }
+export function emitMeasureClear() { bus.emit('measureClear') }
+export function onMeasureClear(fn: () => void): () => void { bus.on('measureClear', fn); return () => bus.off('measureClear', fn) }
+export function emitMeasureRetry() { bus.emit('measureRetry') }
+export function onMeasureRetry(fn: () => void): () => void { bus.on('measureRetry', fn); return () => bus.off('measureRetry', fn) }
+let measureState: MeasureState = { status: 'unavailable', points: [] }
+export function emitMeasureState(state: MeasureState) { measureState = state; bus.emit('measureState', state) }
+export function onMeasureState(fn: (state: MeasureState) => void): () => void { bus.on('measureState', fn); fn(measureState); return () => bus.off('measureState', fn) }
 
 export function emitLayerToggle(event: LayerToggleEvent) { bus.emit('layerToggle', event) }
 export function onLayerToggle(fn: (e: LayerToggleEvent) => void): () => void { bus.on('layerToggle', fn); return () => bus.off('layerToggle', fn) }

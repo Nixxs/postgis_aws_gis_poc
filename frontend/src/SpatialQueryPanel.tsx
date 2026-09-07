@@ -5,6 +5,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import { useConfig } from './config'
 import { useAuth } from './auth'
 import { spatialQuery } from './api'
+import { onMeasureStart } from './events'
 import { emitSpatialDrawStart, emitSpatialDrawFinish, emitSpatialDrawClear, onSpatialDrawComplete, emitSpatialDrawGeometry, emitQueryResult, emitClearQuery, type DrawGeometry } from './events'
 
 const DEFAULT_BUFFER_METERS = 0
@@ -16,6 +17,7 @@ export default function SpatialQueryPanel() {
   const [drawingPolygon, setDrawingPolygon] = useState(false); const [running, setRunning] = useState(false); const [error, setError] = useState<string | null>(null); const [resultCount, setResultCount] = useState<number | null>(null)
   useEffect(() => { if (layer && !availableLayers.some((l) => l.id === layer)) setLayer('') }, [availableLayers, layer])
   useEffect(() => onSpatialDrawComplete((e) => { setGeometry(e.geometry); setDrawingPolygon(false) }), [])
+  useEffect(() => onMeasureStart(() => { setGeometry(null); setDrawingPolygon(false); setResultCount(null) }), [])
   const beginDraw = (mode: 'point' | 'polygon') => { setError(null); setResultCount(null); setGeometry(null); emitSpatialDrawClear(); emitSpatialDrawStart({ mode }); setDrawingPolygon(mode === 'polygon') }
   const run = async () => {
     if (!layer || !geometry) return

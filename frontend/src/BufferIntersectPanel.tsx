@@ -5,6 +5,7 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import { useConfig, isLayerInZoomRange } from './config'
 import { useAuth } from './auth'
 import { spatialQuery } from './api'
+import { onMeasureStart } from './events'
 import { emitSpatialDrawStart, emitSpatialDrawFinish, emitSpatialDrawClear, onSpatialDrawComplete, emitSpatialDrawGeometry, emitQueryResultMulti, emitClearQuery, onLayerToggle, onMapZoom, type DrawGeometry } from './events'
 
 const UNIT_TO_METERS = { meters: 1, kilometers: 1000, feet: 0.3048, miles: 1609.344 } as const
@@ -21,6 +22,7 @@ export default function BufferIntersectPanel() {
   useEffect(() => onLayerToggle((e) => setVisible((prev) => ({ ...prev, [e.id]: e.visible }))), [])
   useEffect(() => onMapZoom((e) => setZoom(e.zoom)), [])
   useEffect(() => onSpatialDrawComplete((e) => { setGeometry(e.geometry); setDrawing(false) }), [])
+  useEffect(() => onMeasureStart(() => { setGeometry(null); setDrawing(false); setSummary(null) }), [])
   const activeLayers = useMemo(() => (config?.layers ?? []).filter((l) => (!l.requiresAuth || user) && visible[l.id] && isLayerInZoomRange(l, zoom)), [config, user, visible, zoom])
   const bufferMeters = useMemo(() => { const n = Number(bufferValue); return bufferValue.trim() === '' || Number.isNaN(n) || n < 0 ? NaN : n * UNIT_TO_METERS[bufferUnit] }, [bufferValue, bufferUnit])
   const bufferValid = !Number.isNaN(bufferMeters); const bufferTooBig = bufferValid && bufferMeters > MAX_BUFFER_METERS
