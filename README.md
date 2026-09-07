@@ -387,3 +387,203 @@ docker run --rm -it `
   postgres:16 `
   psql "host=dtp-aws-poc.c582u0iemihr.ap-southeast-2.rds.amazonaws.com port=5432 dbname=gis user=postgres sslmode=verify-full sslrootcert=/global-bundle.pem"
 ```
+
+## OpenLayers frontend (independent sibling)
+
+The React/OpenLayers application is separate from the original React/MapLibre
+application. Both use the shared API; neither frontend replaces the other.
+
+| | Original MapLibre | Native OpenLayers |
+| --- | --- | --- |
+| Development URL | http://localhost:5173 | http://localhost:5174 (strict port) |
+| Package | [frontend/package.json](frontend/package.json) | [frontend-ol/package.json](frontend-ol/package.json) |
+| Independent layer/basemap configuration | [frontend/public/config.json](frontend/public/config.json) | [frontend-ol/public/config.json](frontend-ol/public/config.json) |
+| Deployment script | [infra/deploy-frontend.ps1](infra/deploy-frontend.ps1) | [infra/deploy-frontend-ol.ps1](infra/deploy-frontend-ol.ps1) |
+| Map/tile projection | EPSG:3857 | EPSG:7899 (GDA2020 / Vicgrid) |
+
+The OpenLayers sibling retains the same layer controls, attribute queries,
+spatial queries, buffer intersections, result tables, feature information,
+location controls and two-point measurement workflow. Mock login is
+**demo / demo**. It only gates UI visibility, including restricted basemaps and
+parcels; it is **not security**, and the shared API does not enforce that login.
+
+### Local development and configuration
+
+Use Node.js 22 LTS or newer and npm 9+. Unit tests use native `node:test` and its
+mocking APIs; the separate browser suite uses Playwright. This sibling uses
+patched Vite 6.4.3 build tools without upgrading the original frontend. Start the
+local API on port **8001** as described above, with the native grid and vector
+tile endpoints available. Install this sibling's own locked dependencies:
+
+```powershell
+# From the repository root
+cd frontend-ol
+npm ci
+```
+
+Set [frontend-ol/.env.development](frontend-ol/.env.development) for local API
+development (the available keys are also listed in
+[frontend-ol/.env.example](frontend-ol/.env.example)):
+
+```dotenv
+VITE_QUERY_API_URL=/api
+VITE_TILE_API_URL=/api
+VITE_CONFIG_URL=/config.json
+VITE_DEV_API_URL=http://127.0.0.1:8001
+```
+
+`VITE_QUERY_API_URL` is the base for query/schema requests;
+`VITE_TILE_API_URL` is the base for native MVT and relative grid-metadata URLs.
+`VITE_CONFIG_URL` selects this application's configuration, defaulting to its
+own `/config.json`. `VITE_DEV_API_URL` is the development proxy target only:
+Vite strips `/api` before forwarding to the backend. To test a deployed API
+through the local proxy, change only that target to its HTTPS API base URL.
+Restart Vite after environment changes. Do not place credentials in `VITE_*`
+values; they are public frontend settings.
+
+```powershell
+# From frontend-ol
+npm run dev
+```
+
+Open http://localhost:5174; the original frontend can remain on port 5173.
+For a standalone production build, supply real API bases through
+`VITE_QUERY_API_URL` and `VITE_TILE_API_URL`, not the development-only `/api`
+proxy. The deployment script below supplies both automatically.
+
+```powershell
+# From frontend-ol, with the intended production API environment configured
+npm run build
+npm test
+# Run just the projection/grid/API-contract suite:
+node --test tests/projections.test.mjs
+```
+
+The native Node tests bundle the real TypeScript/OpenLayers code with esbuild
+using `write: false` and import a data URL; no generated test modules, live
+database or WMTS connection are required.
+[frontend-ol/tests/projections.test.mjs](frontend-ol/tests/projections.test.mjs)
+covers the PostGIS coordinate fixture (1 mm tolerance), WGS84 point/polygon and
+query-result round trips, the original 1109.9241542897053 m measurement scenario
+(1 cm tolerance), invalid/zero/symmetric measurements, all 14 matrix levels,
+tile bounds and URL conventions, parcel zoom translation and mocked query/API
+contracts. A throwing `fetch` stub verifies local measurement does not access
+the network. [frontend-ol/tests/drawing.test.mjs](frontend-ol/tests/drawing.test.mjs)
+additionally exercises real OL drawing interactions, completion/cancellation,
+mode switching, navigation suppression and cleanup.
+
+For live Chromium integration checks, keep the API running with the planning
+layer loaded and ensure the Vicmap WMTS service is reachable:
+
+```powershell
+# From frontend-ol; install the test browser once
+npx playwright install chromium
+npm run test:browser
+```
+
+The browser suite starts or reuses the frontend on http://127.0.0.1:5174 and
+checks native raster/vector requests, two-click measurement with no `/measure`
+traffic, WGS84 drawing and spatial-query submission, result-table selection,
+login-gated parcel zoom visibility and sidebar resizing. Screenshots and failure
+traces are generated under the ignored test-results directory. The unit suite
+contains 23 tests and the browser suite contains 6 integration tests.
+
+### Native map, query boundary and measurement accuracy
+
+- The **view, drawn sketches, raster WMTS and native MVT sources use EPSG:7899**.
+  Startup fetches `GET /tiles/grids/vicgrid`; the backend supplies all matrix
+  metadata, including origin, tile size, resolutions, sizes and matrix IDs.
+  Both raster and vector grids use those values, with wrapping disabled.
+  This is the non-power-of-two Vicmap snapshot described in the endpoint
+  reference above, not a hard-coded Web Mercator pyramid in the map component.
+- Native raster basemaps use Vicmap WMTS `CARTO_VG2020` and `AERIAL_VG2020`
+  with matrix set `EPSG:7899` (`CARTO_OVERLAY_VG2020` is also available).
+  Raster requests use matrix identifiers `00`–`13`; vectors use integer `z`
+  in `/tiles/vicgrid/{layer}/{z}/{x}/{y}.mvt`. The map does not reproject the
+  original EPSG:3857 tile endpoint. A missing/invalid metadata response is
+  shown as an error with Retry: deploy the native backend endpoints first.
+- There is **no reprojected OSM fallback**. Disabling all native basemaps leaves
+  a blank background behind enabled vectors, sketches and query results.
+- `/query` and `/spatial-query` retain their **EPSG:4326 GeoJSON boundary**:
+  native drawn points/polygons are transformed to `[longitude, latitude]`
+  before submission; returned features and `queryGeometry` are transformed
+  back into EPSG:7899 for display. No query API contract changes are required.
+- OpenLayers measurement is **client-side planar distance in EPSG:7855**
+  (GDA2020 / MGA zone 55), transforming the two fixed native EPSG:7899
+  endpoints locally. It makes **no `/measure` calls**, including Retry, and
+  reports metres, not geodesic, terrain or route distance. The existing server
+  `/measure` endpoint remains available to the original frontend. Zone 55 is
+  not automatically changed to zone 54 for western Victoria.
+- WGS84 conversions use a **null datum transformation**, not a survey-grade
+  or coordinate-epoch-aware WGS84/GDA2020 transformation. The numeric tests
+  establish agreement with recorded fixtures, not survey/epoch accuracy.
+
+Native matrix indices **0–13 are unrelated to legacy MapLibre zoom numbers**.
+Copied `minZoom`/`maxZoom` settings keep the original **512-pixel** MapLibre
+scale by translating approximate ground resolution at the current latitude:
+
+$$
+r = \frac{78271.51696402048\cos(\varphi)}{2^{z_{\mathrm{legacy}}}}
+\quad\text{metres/pixel}
+$$
+
+Here $\varphi$ is latitude in radians. This is an approximate visibility/fit
+translation, not an exact projection-scale correction. For example, parcel
+`minZoom: 14` becomes a view resolution between native levels **8 and 9** near
+Melbourne, not an attempt to request native matrix 14. The lower zoom bound
+is inclusive and the upper bound exclusive.
+
+### Separate AWS deployment (instructions only)
+
+**No OpenLayers AWS deployment has been executed as part of this change, and
+no new OpenLayers CloudFront URL has been issued or verified.** The existing
+MapLibre deployment and endpoint documentation above remain applicable.
+
+Prerequisites: deploy the shared backend's `/tiles/grids/vicgrid` and
+`/tiles/vicgrid/{layer}/{z}/{x}/{y}.mvt` routes first; verify them on the intended
+API, not just in local source. Install the sibling dependencies with `npm ci`
+before deployment. [infra/deploy-frontend-ol.ps1](infra/deploy-frontend-ol.ps1)
+**does not install dependencies** or invoke the original frontend deployer.
+
+Use [infra/.env.example](infra/.env.example) as the settings reference and
+choose a private deployment configuration through the script's `-ConfigFile`
+parameter (default: the infra dotenv configuration). Preserve existing API,
+database and original frontend settings. The OL deployer reads these settings
+from that file, **not inherited `FRONTEND_OL_*` shell variables**:
+
+| Setting | Purpose / default |
+| --- | --- |
+| `AWS_PROFILE`, `AWS_REGION`, `AWS_ACCOUNT_ID` | Required AWS settings; account identity is checked before build/resource changes |
+| `FRONTEND_OL_API_URL` | Required shared production **HTTPS API base URL** for a normal build; supply the actual API URL, not either frontend URL; no credentials, query or fragment |
+| `FRONTEND_OL_BUCKET` | Separate private S3 bucket; blank defaults to `gis-postgis-frontend-ol-<verified AWS account ID>` |
+| `FRONTEND_OL_CLOUDFRONT_COMMENT` | Separate distribution lookup comment; default `gis-postgis-frontend-ol` |
+| `FRONTEND_OL_OAC_NAME` | Separate Origin Access Control; default `gis-postgis-frontend-ol-oac` |
+| `FRONTEND_OL_URL` | Leave blank until the new distribution origin is known; then use it to extend API CORS |
+
+Bucket, distribution comment and OAC must differ from the original frontend's
+configured and default resources; the script checks for resource sharing.
+During build it sets both `VITE_QUERY_API_URL` and `VITE_TILE_API_URL` from
+`FRONTEND_OL_API_URL`, and `VITE_CONFIG_URL=/config.json` for the sibling's own
+configuration. It restores the prior build environment afterwards. Uploads
+and invalidation target the separate OL distribution. `-SkipBuild` reuses
+existing output; it does not verify the API URLs embedded in that output.
+
+```powershell
+# From the repository root, only when ready to deploy to AWS
+.\infra\deploy-frontend-ol.ps1
+# Alternatively, pass your private settings file using -ConfigFile.
+```
+
+After a successful deployment, set `FRONTEND_OL_URL` in the same configuration
+to the printed `https://<distribution>.cloudfront.net` origin (no path).
+**Keep `FRONTEND_URL` unchanged** for MapLibre, then redeploy the shared API
+with [infra/deploy-api.ps1](infra/deploy-api.ps1) using the same `-ConfigFile`:
+it adds the OL origin alongside the existing origin in CORS. Leaving
+`FRONTEND_OL_URL` blank preserves single-frontend access. CORS is not
+authentication. Allow time for CloudFront deployment and cache invalidation.
+
+
+### URLS
+Open Layers Frontend: https://d2fwf1q6xmjgmr.cloudfront.net/
+Maplibre Frontend: https://d3m770p4wtb32m.cloudfront.net/
+Backend API URL: https://r554gl2g2j.execute-api.ap-southeast-2.amazonaws.com/health

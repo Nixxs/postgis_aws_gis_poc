@@ -1,0 +1,8 @@
+.vicgrid-map .ol-zoom { left: auto; right: 8px; top: 8px; }
+.vicgrid-map .ol-rotate { top: 70px; right: 8px; }
+.vicgrid-map .ol-control { background: #fff; box-shadow: 0 1px 4px #0004; padding: 2px; }
+.vicgrid-map .ol-control button { background: white; color: #424242; width: 28px; height: 28px; cursor: pointer; }
+.vicgrid-map .ol-control button:hover { background: #eee; }
+.vicgrid-map .ol-scale-line { background: #fffC; }
+.vicgrid-map .ol-scale-line-inner { color: #333; border-color: #333; }
+.vicgrid-map:focus-visible { outline: 2px solid #1976d2; outline-offset: -2px; }

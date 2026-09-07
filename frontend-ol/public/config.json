@@ -1,0 +1,63 @@
+{
+  "projection": "EPSG:7899",
+  "tileGridUrl": "/tiles/grids/vicgrid",
+  "basemaps": [
+    {
+      "id": "vicmap_carto",
+      "label": "Vicmap Basemap",
+      "url": "https://base.maps.vic.gov.au/service?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=CARTO_VG2020&STYLE=default&TILEMATRIXSET=EPSG:7899&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png",
+      "visibleByDefault": true,
+      "attribution": "© State of Victoria (Department of Transport and Planning)",
+      "tileSize": 512
+    },
+    {
+      "id": "vicmap_aerial",
+      "label": "Vicmap Aerial",
+      "url": "https://base.maps.vic.gov.au/service?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=AERIAL_VG2020&STYLE=default&TILEMATRIXSET=EPSG:7899&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/png",
+      "visibleByDefault": false,
+      "attribution": "© State of Victoria (Department of Transport and Planning)",
+      "tileSize": 512,
+      "requiresAuth": true
+    }
+  ],
+  "layers": [
+    {
+      "id": "au_vic_dtp_planning_scheme_all",
+      "label": "Planning Scheme",
+      "visibleByDefault": true,
+      "opacity": 0.4,
+      "color": "#1976d2"
+    },
+    {
+      "id": "au_vic_dtp_env_environmental_significance",
+      "label": "Environmental Significance",
+      "visibleByDefault": false,
+      "opacity": 0.4,
+      "color": "#2e7d32"
+    },
+    {
+      "id": "au_vic_dtp_env_significant_landscape",
+      "label": "Significant Landscape",
+      "visibleByDefault": false,
+      "opacity": 0.4,
+      "color": "#00838f"
+    },
+    {
+      "id": "au_vic_dtp_env_vegetation_protection",
+      "label": "Vegetation Protection",
+      "visibleByDefault": false,
+      "opacity": 0.4,
+      "color": "#558b2f",
+      "requiresAuth": true
+    },
+    {
+      "id": "au_vic_dtp_parcel",
+      "label": "Parcels",
+      "visibleByDefault": true,
+      "opacity": 0.15,
+      "color": "#ef6c00",
+      "requiresAuth": true,
+      "minZoom": 14
+    }
+  ]
+}

@@ -23,8 +23,10 @@ logger = logging.getLogger(__name__)
 
 # CORS settings
 origins = [
-    config.FRONTEND_URL,  # Add production frontend domain at some point
+    config.FRONTEND_URL,
 ]
+if config.FRONTEND_OL_URL and config.FRONTEND_OL_URL.strip():
+    origins.append(config.FRONTEND_OL_URL.strip().rstrip("/"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

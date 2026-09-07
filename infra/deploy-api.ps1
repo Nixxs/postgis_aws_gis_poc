@@ -104,6 +104,9 @@ function Grant-SecurityGroupIngress(
     throw "Failed to authorize ingress from $SourceGroupId to $GroupId on port ${Port}: $awsError"
 }
 
+# Reset the optional origin before import so an older config file cannot inherit
+# a stale OL origin from a previous deployment in this PowerShell session.
+$env:FRONTEND_OL_URL = ""
 Import-DotEnv $ConfigFile
 Test-RequiredCommand "aws"
 Test-RequiredCommand "docker"
@@ -178,6 +181,8 @@ $secretPayload = @{
     DB_PORT = $env:DB_PORT
     DB_NAME = $env:DB_NAME
     FRONTEND_URL = $env:FRONTEND_URL
+    # Always include the optional key so ECS can resolve it even when unset.
+    FRONTEND_OL_URL = $(if ($env:FRONTEND_OL_URL) { $env:FRONTEND_OL_URL.Trim().TrimEnd('/') } else { "" })
 } | ConvertTo-Json -Compress
 $secretFile = Join-Path ([System.IO.Path]::GetTempPath()) "gis-api-secret-$PID.json"
 Write-Utf8NoBom -Path $secretFile -Content $secretPayload
@@ -284,7 +289,7 @@ if (-not $existingLogGroup) {
 
 Write-Host "Creating a new task definition revision..."
 $taskDefinitionFile = Join-Path ([System.IO.Path]::GetTempPath()) "gis-api-task-$PID.json"
-$containerSecrets = @("DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME", "FRONTEND_URL") | ForEach-Object {
+$containerSecrets = @("DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME", "FRONTEND_URL", "FRONTEND_OL_URL") | ForEach-Object {
     @{ name = $_; valueFrom = "${secretArn}:$($_)::" }
 }
 $taskDefinition = @{

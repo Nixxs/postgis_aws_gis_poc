@@ -1,0 +1,133 @@
+import { test, expect } from '@playwright/test'
+
+// Integration smoke tests: the local API must be running on the configured
+// VITE_DEV_API_URL, with the new native endpoints and loaded PostGIS layers.
+test.beforeEach(async ({ page }) => {
+  const errors = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await page.goto('/')
+  await expect(page.getByText('Loading native Vicgrid map…')).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Find my location', exact: true })).toBeEnabled()
+  await page.evaluate(async () => {
+    const events = await import('/src/events.ts')
+    events.onMeasureState((state) => { window.__measure = state })
+    events.onSpatialDrawComplete(({ geometry }) => { window.__geometry = geometry })
+    events.onMapZoom(({ zoom }) => { window.__zoom = zoom })
+  })
+  await expect.poll(() => page.evaluate(() => window.__measure?.status)).toBe('idle')
+  expect(errors).toEqual([])
+})
+
+test('native raster and vector requests use different matrix IDs on the same Vicgrid', async ({ page }) => {
+  const resources = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name))
+  expect(resources.some((url) => url.includes('/api/tiles/grids/vicgrid'))).toBeTruthy()
+  // Requests may still be in progress: wait on response rather than arbitrary sleep.
+  await expect.poll(async () => page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name).filter((url) => url.includes('/tiles/vicgrid/')).length), { timeout: 30000 }).toBeGreaterThan(0)
+  await expect.poll(async () => page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name).filter((url) => url.includes('base.maps.vic.gov.au')).length), { timeout: 30000 }).toBeGreaterThan(0)
+  const urls = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name))
+  const wmts = new URL(urls.find((url) => url.includes('base.maps.vic.gov.au')))
+  const params = Object.fromEntries([...wmts.searchParams].map(([k, v]) => [k.toUpperCase(), v]))
+  expect(params.TILEMATRIXSET).toBe('EPSG:7899')
+  expect(params.LAYER).toBe('CARTO_VG2020')
+  expect(params.TILEMATRIX).toMatch(/^\d{2}$/)
+  expect(urls.some((url) => /\/tiles\/(?!vicgrid\/|grids\/)/.test(url))).toBeFalsy()
+  await page.screenshot({ path: 'test-results/openlayers-native.png', fullPage: true })
+})
+
+test('two real map clicks measure locally and Escape cancels without a measurement request', async ({ page }) => {
+  const measurementRequests = []
+  page.on('request', (request) => { if (new URL(request.url()).pathname.endsWith('/measure')) measurementRequests.push(request.url()) })
+  await page.getByRole('button', { name: 'Measure distance', exact: true }).click()
+  await page.getByRole('button', { name: 'Select two points', exact: true }).click()
+  const map = page.locator('.vicgrid-map')
+  await map.click({ position: { x: 450, y: 320 } })
+  await expect.poll(() => page.evaluate(() => window.__measure.points.length)).toBe(1)
+  await map.click({ position: { x: 450, y: 420 } })
+  await expect.poll(() => page.evaluate(() => window.__measure.status)).toBe('complete')
+  const state = await page.evaluate(() => window.__measure)
+  expect(state.result.measurementCrs).toBe('EPSG:7855')
+  expect(state.result.sourceCrs).toBe('EPSG:7899')
+  expect(state.result.distance).toBeGreaterThan(20000)
+  expect(state.result.distance).toBeLessThan(26000)
+  expect(state.points[0][0]).toBeGreaterThan(140)
+  expect(state.points[0][0]).toBeLessThan(150)
+  expect(measurementRequests).toEqual([])
+  await page.getByRole('button', { name: 'Start again', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect.poll(() => page.evaluate(() => window.__measure.status)).toBe('idle')
+  expect(measurementRequests).toEqual([])
+})
+
+test('point/polygon drawings emit WGS84, and Escape resets the copied panel', async ({ page }) => {
+  await page.getByRole('button', { name: 'Expand spatial query', exact: true }).click()
+  await page.getByRole('button', { name: 'Point', exact: true }).click()
+  const map = page.locator('.vicgrid-map')
+  const bounds = await map.boundingBox()
+  await map.click({ position: { x: bounds.width / 2, y: bounds.height / 2 } })
+  await expect.poll(() => page.evaluate(() => window.__geometry?.type)).toBe('Point')
+  const geometry = await page.evaluate(() => window.__geometry)
+  expect(geometry.coordinates[0]).toBeCloseTo(144.9631, 4)
+  expect(geometry.coordinates[1]).toBeCloseTo(-37.8136, 4)
+  await expect(page.getByText('Point selected.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Polygon', exact: true }).click()
+  await map.click({ position: { x: 400, y: 300 } })
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('button', { name: 'Finish', exact: true })).toBeHidden()
+  await expect(page.getByText('Draw a point or polygon on the map.', { exact: true })).toBeVisible()
+})
+
+test('WGS84 query results render and the attribute table can select a result', async ({ page }) => {
+  await page.evaluate(async () => {
+    const { emitQueryResult } = await import('/src/events.ts')
+    emitQueryResult({ layer: 'au_vic_dtp_planning_scheme_all', geojson: { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { test_name: 'Melbourne browser check' }, geometry: { type: 'Point', coordinates: [144.9631, -37.8136] } }] } })
+  })
+  await expect(page.getByText('Melbourne browser check', { exact: true })).toBeVisible()
+  await page.getByText('Melbourne browser check', { exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.__zoom)).toBeGreaterThan(14.9)
+  await page.screenshot({ path: 'test-results/openlayers-query.png', fullPage: true })
+})
+
+test('spatial panel sends WGS84 to the shared API and renders the response', async ({ page }) => {
+  await page.getByRole('button', { name: 'Expand spatial query', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Layer', exact: true }).click()
+  await page.getByRole('option', { name: 'Planning Scheme', exact: true }).click()
+  await page.getByRole('button', { name: 'Point', exact: true }).click()
+  await page.locator('.vicgrid-map').click({ position: { x: 550, y: 476 } })
+  await expect(page.getByText('Point selected.', { exact: true })).toBeVisible()
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith('/spatial-query') && response.request().method() === 'POST')
+  await page.getByRole('button', { name: 'Run spatial query', exact: true }).click()
+  const response = await responsePromise
+  expect(response.ok()).toBeTruthy()
+  const sent = response.request().postDataJSON()
+  expect(sent.layer).toBe('au_vic_dtp_planning_scheme_all')
+  expect(sent.geometry.type).toBe('Point')
+  expect(sent.geometry.coordinates[0]).toBeGreaterThan(140)
+  expect(sent.geometry.coordinates[0]).toBeLessThan(150)
+  expect(sent.geometry.coordinates[1]).toBeLessThan(-30)
+  expect(sent.buffer).toBe(0)
+  await expect(page.getByText(/\d+ features? found/)).toBeVisible()
+})
+
+test('login-gated parcels use equivalent zoom and sidebar collapse resizes the map', async ({ page }) => {
+  await expect(page.getByText('Parcels', { exact: true })).toBeHidden()
+  await page.getByRole('button', { name: 'Login', exact: true }).click()
+  await page.getByLabel('Username').fill('demo')
+  await page.getByLabel('Password', { exact: true }).fill('demo')
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await expect(page.getByText('Parcels', { exact: true })).toBeVisible()
+  const parcel = page.getByRole('listitem').filter({ hasText: 'Parcels' })
+  await expect(parcel).toHaveCSS('opacity', '0.4')
+  await page.getByRole('button', { name: 'Go to latitude / longitude', exact: true }).click()
+  await page.getByLabel('Latitude', { exact: true }).fill('-37.8136')
+  await page.getByLabel('Longitude', { exact: true }).fill('144.9631')
+  // Query feature fit uses zoom 15, comfortably above the parcel threshold.
+  await page.getByRole('button', { name: 'Go', exact: true }).click()
+  await page.evaluate(async () => {
+    const { emitResultFeatureSelect } = await import('/src/events.ts')
+    emitResultFeatureSelect({ feature: { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [144.9631, -37.8136] } } })
+  })
+  await expect(parcel).toHaveCSS('opacity', '1')
+  const before = await page.locator('.vicgrid-map').boundingBox()
+  await page.getByRole('button', { name: 'Hide panel', exact: true }).click()
+  await expect.poll(async () => (await page.locator('.vicgrid-map').boundingBox()).width).toBeGreaterThan(before.width + 300)
+})
