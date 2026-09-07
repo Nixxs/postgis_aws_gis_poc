@@ -1,8 +1,14 @@
-"""Serve PostGIS layers as Mapbox Vector Tiles for MapLibre clients."""
+"""Serve Web Mercator and native GDA2020 / Vicgrid Mapbox Vector Tiles."""
 
 from fastapi import APIRouter, HTTPException, Path, Query, Response
 
 from app.database import database
+from app.tile_grids import (
+    VICGRID_MAX_ZOOM,
+    VICGRID_SRID,
+    vicgrid_metadata,
+    vicgrid_tile_bounds,
+)
 
 router = APIRouter(prefix="/tiles", tags=["tiles"])
 
@@ -106,23 +112,82 @@ async def vector_tile(
             detail=f"x and y must be between 0 and {tile_count - 1} at zoom {z}",
         )
 
+    return await _render_tile(
+        layer, schema, fields, 3857,
+        f"ST_TileEnvelope({z}, {x}, {y})", {},
+    )
+
+
+@router.get("/grids/vicgrid")
+async def vicgrid_grid():
+    """Describe the native grid, including non-power-of-two WMTS zoom levels."""
+    return {
+        **vicgrid_metadata(),
+        "mvtExtent": MVT_EXTENT,
+        "mvtBuffer": MVT_BUFFER,
+        "sourceLayer": "{layer}",
+    }
+
+
+@router.get("/vicgrid/{layer}/{z}/{x}/{y}.mvt", response_class=Response)
+async def vicgrid_vector_tile(
+    layer: str,
+    z: int = Path(ge=0, le=VICGRID_MAX_ZOOM),
+    x: int = Path(ge=0),
+    y: int = Path(ge=0),
+    schema: str = Query(default="public"),
+    fields: str | None = Query(default=None, description="Comma-separated properties; defaults to all attributes"),
+):
+    """Native EPSG:7899 MVT aligned to Vicmap's GDA2020 WMTS grid.
+
+    z is the zero-based matrix index (0..13), x is the column, y is the row
+    counted from the top. These are not Web Mercator tile coordinates.
+    """
+    try:
+        xmin, ymin, xmax, ymax = vicgrid_tile_bounds(z, x, y)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await _render_tile(
+        layer, schema, fields, VICGRID_SRID,
+        "ST_MakeEnvelope(:xmin, :ymin, :xmax, :ymax, 7899)",
+        {"xmin": xmin, "ymin": ymin, "xmax": xmax, "ymax": ymax,
+         "margin": (xmax - xmin) * MVT_BUFFER / MVT_EXTENT,
+         "segment_length": (xmax - xmin) / 64},
+        buffered=True,
+    )
+
+
+async def _render_tile(layer, schema, fields, target_srid, envelope_sql, bounds_values, *, buffered=False):
+    """Shared attribute encoding; envelope/CRS expressions are server-controlled."""
     geometry, columns = await _layer_metadata(schema, layer)
     geom_column = _quote_identifier(geometry["geom"])
     table = f"{_quote_identifier(schema)}.{_quote_identifier(layer)}"
     attributes = _attribute_select(columns, fields)
     srid = int(geometry["srid"])
 
+    # Include features in the MVT buffer. Densify the rectangle before changing
+    # CRS because straight Vicgrid edges need not be straight in the data CRS.
+    # Keep the existing Mercator selection behavior unchanged.
+    filter_envelope = (
+        "ST_Segmentize(ST_Expand(tile_geom, :margin), :segment_length)"
+        if buffered else "tile_geom"
+    )
+
     sql = f"""
-        WITH bounds AS (
+        WITH tile_bounds AS (
+            SELECT {envelope_sql} AS tile_geom
+        ),
+        bounds AS (
             SELECT
-                ST_TileEnvelope({z}, {x}, {y}) AS tile_geom,
-                ST_Transform(ST_TileEnvelope({z}, {x}, {y}), {srid}) AS source_geom
+                tile_geom,
+                ST_Transform({filter_envelope}, {srid}) AS source_geom
+            FROM tile_bounds
         ),
         tile_rows AS (
             SELECT
                 {attributes}
                 ST_AsMVTGeom(
-                    ST_Transform(t.{geom_column}, 3857),
+                    ST_Transform(t.{geom_column}, {target_srid}),
                     bounds.tile_geom,
                     {MVT_EXTENT},
                     {MVT_BUFFER},
@@ -140,7 +205,7 @@ async def vector_tile(
     """
     tile = await database.fetch_val(
         sql,
-        {"layer_name": layer},
+        {"layer_name": layer, **bounds_values},
     )
 
     return Response(
