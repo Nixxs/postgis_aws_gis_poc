@@ -23,9 +23,10 @@ function addVectorLayer(map: maplibregl.Map, layer: LayerConfig, layers: LayerCo
   if (!beforeId && map.getLayer('query-result-fill')) beforeId = 'query-result-fill'
   map.addSource(layer.id, {
     type: 'vector',
-    tiles: [`${TILE_API_BASE}/tiles/${encodeURIComponent(layer.id)}/{z}/{x}/{y}.mvt`],
-    minzoom: layer.minZoom ?? 0,
-    maxzoom: layer.maxZoom ?? 22,
+    tiles: [layer.resolvedCache?.tileUrl ?? `${TILE_API_BASE}/tiles/${encodeURIComponent(layer.id)}/{z}/{x}/{y}.mvt`],
+    minzoom: layer.resolvedCache?.minZoom ?? layer.minZoom ?? 0,
+    maxzoom: layer.resolvedCache?.maxZoom ?? layer.maxZoom ?? 22,
+    ...(layer.resolvedCache ? { bounds: layer.resolvedCache.bounds } : {}),
   })
   map.addLayer({ id: `${layer.id}-fill`, type: 'fill', source: layer.id, 'source-layer': layer.id, ...(layer.minZoom != null ? { minzoom: layer.minZoom } : {}), ...(layer.maxZoom != null ? { maxzoom: layer.maxZoom } : {}), paint: { 'fill-color': layer.color, 'fill-opacity': layer.opacity }, layout: { visibility } }, beforeId)
   map.addLayer({ id: `${layer.id}-line`, type: 'line', source: layer.id, 'source-layer': layer.id, ...(layer.minZoom != null ? { minzoom: layer.minZoom } : {}), ...(layer.maxZoom != null ? { maxzoom: layer.maxZoom } : {}), paint: { 'line-color': layer.color, 'line-width': 1 }, layout: { visibility } }, beforeId)

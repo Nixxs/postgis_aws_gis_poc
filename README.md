@@ -324,7 +324,92 @@ not generate a Web Mercator tile and then reproject it. `fields` and `schema`
 work as on the existing endpoint; the internal MVT layer name is `{layer}`.
 Empty tiles return HTTP 200 with an empty body. Invalid coordinates or fields
 return 422; unknown spatial tables return 404. Tiles retain the five-minute
-public cache header. There is no new server-side tile cache or pre-generation.
+public cache header. These API routes remain dynamically rendered and do not
+read from the separately generated S3 cache.
+
+### On-demand S3 tile pyramids
+
+The [tile-cache batch job](tilecache/README.md) can pre-generate either the
+Web Mercator or native Vicgrid MVT pyramid from PostGIS into a private S3
+bucket. [infra/deploy-tilecache.ps1](infra/deploy-tilecache.ps1) provisions an
+AWS Batch Fargate environment and job definition for manual submission in the
+AWS Console. Output versions are immutable and publish `latest.json` only
+after all tiles and manifests have been uploaded.
+[infra/deploy-tilecache-cdn.ps1](infra/deploy-tilecache-cdn.ps1) publishes the
+private bucket through a dedicated CloudFront Origin Access Control with CORS
+response headers. The main MapLibre frontend resolves cache-enabled layers
+through `latest.json`, validates the immutable `tilejson.json`, and uses the
+published CloudFront MVT URL. Cache-disabled layers continue using the API.
+
+#### Run a tile-cache build
+
+The AWS Batch infrastructure and tile CDN are one-time deployments. Run these
+again only when their configuration or container code changes:
+
+```powershell
+# From the repository root
+./infra/deploy-tilecache.ps1
+./infra/deploy-tilecache-cdn.ps1
+```
+
+The main MapLibre [runtime configuration](frontend/public/config.json) is the
+source of truth. Its `layers` array controls which layers are available in the
+UI. A layer's `cache.enabled` flag controls whether the config-driven builder
+submits that same layer ID to AWS Batch. Global `tileCache` settings define the
+S3 prefix, schema, CDN origin and API-fallback policy. Main MapLibre layers
+must use the `webmercator` cache grid. If metadata discovery or validation
+fails, `fallbackToApi: true` retains the dynamic API source; setting it to
+`false` makes startup fail instead. The cache `maxZoom` is the source maximum,
+so MapLibre overzooms its final cached tile above that level rather than
+hiding the layer.
+
+Preview all cache-enabled builds without contacting AWS:
+
+```powershell
+./infra/build-configured-tilecache.ps1 -ListOnly
+```
+
+Start with config-driven Batch dry runs. These validate the PostGIS layers and
+calculate tile ranges without writing tiles:
+
+```powershell
+./infra/build-configured-tilecache.ps1 -DryRun
+```
+
+Remove `-DryRun` to perform the build:
+
+```powershell
+./infra/build-configured-tilecache.ps1
+```
+
+Use `-Layer layer_id` to build only one of the cache-enabled configured layers,
+or `-Version release_name` to give every submitted build an explicit version.
+The orchestrator reads `grid`, `minZoom`, `maxZoom` and `fields` from each
+layer's `cache` object. It calls
+[infra/submit-tilecache.ps1](infra/submit-tilecache.ps1), which remains
+available for ad-hoc builds but cannot make an unconfigured layer appear in
+the UI.
+
+Each submission prints the job ID, AWS Console link and a copyable status
+command. A successful run writes versioned MVTs, `tilejson.json`, `job.json`
+and `latest.json` below:
+
+```text
+s3://gis-postgis-tilecache-878564871075/tiles/{schema}/{layer}/{grid}/
+```
+
+The current CDN base URL is
+`https://dypzi7izkg2i6.cloudfront.net`. For example, the current planning-layer
+pointer is:
+
+```text
+https://dypzi7izkg2i6.cloudfront.net/tiles/public/au_vic_dtp_planning_scheme_all/webmercator/latest.json
+```
+
+The same build can be submitted in the AWS Console by selecting the
+`gis-postgis-tilecache` queue and job definition and entering the equivalent
+arguments under **Container overrides → Command**. The `--layer` argument is
+required; submitting an empty command exits with code 2.
 
 **The native grid matches Vicmap WMTS, not the standard XYZ pyramid.** The
 matrix snapshot in [api/app/tile_grids.py](api/app/tile_grids.py) was verified
@@ -587,3 +672,5 @@ authentication. Allow time for CloudFront deployment and cache invalidation.
 Open Layers Frontend: https://d2fwf1q6xmjgmr.cloudfront.net/
 Maplibre Frontend: https://d3m770p4wtb32m.cloudfront.net/
 Backend API URL: https://r554gl2g2j.execute-api.ap-southeast-2.amazonaws.com/health
+
+Serverless Setup FrontEnd: https://d2343zgqxmbmvm.cloudfront.net/
