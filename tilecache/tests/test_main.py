@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import psycopg2
+
 from app.main import (
     _prefix,
     _version,
@@ -81,6 +83,7 @@ class UploadTests(unittest.TestCase):
     @patch("app.main.render_tile", return_value=b"")
     def test_empty_tile_is_uploaded(self, _render_tile):
         connection = Mock()
+        connection.autocommit = True
         pool = Mock()
         pool.getconn.return_value = connection
         s3 = Mock()
@@ -98,6 +101,33 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(gzip.decompress(kwargs["Body"]), b"")
         self.assertEqual(kwargs["ContentEncoding"], "gzip")
         self.assertTrue(result.empty)
+
+    @patch("app.main.time.sleep")
+    @patch("app.main.render_tile", side_effect=(psycopg2.OperationalError("SSL EOF"), b"tile"))
+    def test_transient_database_disconnect_retries_with_new_connection(self, render, sleep):
+        failed_connection = Mock()
+        failed_connection.autocommit = True
+        replacement_connection = Mock()
+        replacement_connection.autocommit = False
+        pool = Mock()
+        pool.getconn.side_effect = (failed_connection, replacement_connection)
+        s3 = Mock()
+        args = SimpleNamespace(
+            bucket="bucket",
+            schema="public",
+            layer="planning_zones",
+            grid="webmercator",
+        )
+
+        result = process_tile(pool, s3, Mock(), args, (), "tiles/version", (3, 4, 5))
+
+        self.assertEqual(render.call_count, 2)
+        pool.putconn.assert_any_call(failed_connection, close=True)
+        pool.putconn.assert_any_call(replacement_connection)
+        replacement_connection.set_session.assert_called_once_with(readonly=True, autocommit=True)
+        sleep.assert_called_once_with(1)
+        self.assertFalse(result.empty)
+        self.assertEqual(gzip.decompress(s3.put_object.call_args.kwargs["Body"]), b"tile")
 
 
 if __name__ == "__main__":

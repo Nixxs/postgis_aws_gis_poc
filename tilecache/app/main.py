@@ -34,6 +34,7 @@ from .tiling import (
 LOGGER = logging.getLogger("tilecache")
 MVT_EXTENT = 4096
 MVT_BUFFER = 64
+TILE_DATABASE_ATTEMPTS = 3
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _NATIVE_MVT_TYPES = {
@@ -124,6 +125,10 @@ def connect_kwargs() -> dict[str, object]:
         "password": os.environ["DB_PASSWORD"],
         "dbname": os.environ["DB_NAME"],
         "connect_timeout": 15,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 5,
         "application_name": "postgis-tilecache-batch",
         "options": "-c default_transaction_read_only=on",
     }
@@ -283,11 +288,27 @@ def upload_json(s3, bucket: str, key: str, value: dict, cache_control: str) -> N
 
 def process_tile(pool, s3, metadata, args, columns, base_key: str, tile: tuple[int, int, int]) -> TileResult:
     z, x, y = tile
-    connection = pool.getconn()
-    try:
-        payload = render_tile(connection, metadata, args.schema, args.layer, args.grid, z, x, y, columns)
-    finally:
-        pool.putconn(connection)
+    for attempt in range(1, TILE_DATABASE_ATTEMPTS + 1):
+        connection = pool.getconn()
+        try:
+            if not connection.autocommit:
+                connection.set_session(readonly=True, autocommit=True)
+            payload = render_tile(connection, metadata, args.schema, args.layer, args.grid, z, x, y, columns)
+        except (psycopg2.InterfaceError, psycopg2.OperationalError):
+            pool.putconn(connection, close=True)
+            if attempt == TILE_DATABASE_ATTEMPTS:
+                raise
+            LOGGER.warning(
+                "Database connection failed for tile %s/%s/%s; retrying with a new connection (%s/%s)",
+                z, x, y, attempt + 1, TILE_DATABASE_ATTEMPTS,
+            )
+            time.sleep(2 ** (attempt - 1))
+        except BaseException:
+            pool.putconn(connection)
+            raise
+        else:
+            pool.putconn(connection)
+            break
     compressed = gzip.compress(payload, compresslevel=6, mtime=0)
     s3.put_object(
         Bucket=args.bucket,

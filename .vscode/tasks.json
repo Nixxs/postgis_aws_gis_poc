@@ -16,30 +16,6 @@
 			],
 			"isBackground": true,
 			"problemMatcher": []
-		},
-		{
-			"label": "Diagnose dynamic tile endpoints",
-			"type": "shell",
-			"command": "powershell.exe",
-			"args": [
-				"-NoProfile",
-				"-Command",
-				"$urls=@('http://127.0.0.1:5173/api/health','http://127.0.0.1:8001/health','https://r554gl2g2j.execute-api.ap-southeast-2.amazonaws.com/health','http://127.0.0.1:5173/api/tiles/au_vic_dtp_env_environmental_significance/8/230/156.mvt'); foreach($url in $urls){try{$r=Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30; Write-Output \"$url|$($r.StatusCode)|$($r.Headers['Content-Type'])|$($r.RawContentLength)\"}catch{Write-Output \"$url|ERROR|$($_.Exception.Message)\"}}"
-			],
-			"isBackground": false,
-			"problemMatcher": []
-		},
-		{
-			"label": "List configured tile caches",
-			"type": "shell",
-			"command": "powershell.exe",
-			"args": [
-				"-NoProfile",
-				"-ExecutionPolicy",
-				"Bypass",
-				"-File",
-				"infra/build-configured-tilecache.ps1",
-				"-ListOnly"
 			],
 			"isBackground": false,
 			"problemMatcher": []
