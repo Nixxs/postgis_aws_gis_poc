@@ -22,7 +22,7 @@ test('native raster and vector requests use different matrix IDs on the same Vic
   const resources = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name))
   expect(resources.some((url) => url.includes('/api/tiles/grids/vicgrid'))).toBeTruthy()
   // Requests may still be in progress: wait on response rather than arbitrary sleep.
-  await expect.poll(async () => page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name).filter((url) => url.includes('/tiles/vicgrid/')).length), { timeout: 30000 }).toBeGreaterThan(0)
+  await expect.poll(async () => page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name).filter((url) => /\/tiles\/public\/[^/]+\/vicgrid\/[^/]+\/\d+\/\d+\/\d+\.mvt/.test(url) || url.includes('/tiles/vicgrid/')).length), { timeout: 30000 }).toBeGreaterThan(0)
   await expect.poll(async () => page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name).filter((url) => url.includes('base.maps.vic.gov.au')).length), { timeout: 30000 }).toBeGreaterThan(0)
   const urls = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name))
   const wmts = new URL(urls.find((url) => url.includes('base.maps.vic.gov.au')))
@@ -30,7 +30,11 @@ test('native raster and vector requests use different matrix IDs on the same Vic
   expect(params.TILEMATRIXSET).toBe('EPSG:7899')
   expect(params.LAYER).toBe('CARTO_VG2020')
   expect(params.TILEMATRIX).toMatch(/^\d{2}$/)
-  expect(urls.some((url) => /\/tiles\/(?!vicgrid\/|grids\/)/.test(url))).toBeFalsy()
+  expect(urls.some((value) => {
+    const url = new URL(value)
+    return url.pathname.startsWith('/api/tiles/') && !url.pathname.startsWith('/api/tiles/vicgrid/') && !url.pathname.startsWith('/api/tiles/grids/')
+  })).toBeFalsy()
+  await expect(page.getByText('Some map tiles could not load. Check the backend, network connection, and configured native basemap URLs.')).toBeHidden()
   await page.screenshot({ path: 'test-results/openlayers-native.png', fullPage: true })
 })
 

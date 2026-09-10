@@ -100,13 +100,25 @@ try {
         ($inputDocument | ConvertTo-Json -Depth 8),
         (New-Object System.Text.UTF8Encoding($false))
     )
-    $result = & aws batch submit-job `
-        --cli-input-json "file://$inputPath" `
-        --profile $settings.AWS_PROFILE `
-        --region $settings.AWS_REGION `
-        --output json `
-        --no-cli-pager 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "AWS Batch submission failed:`n$($result | Out-String)" }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell turns native stderr into ErrorRecord objects. Keep
+        # collecting output so the complete AWS CLI error can be reported.
+        $ErrorActionPreference = "Continue"
+        $result = & aws batch submit-job `
+            --cli-input-json "file://$inputPath" `
+            --profile $settings.AWS_PROFILE `
+            --region $settings.AWS_REGION `
+            --output json `
+            --no-cli-pager 2>&1
+        $awsExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($awsExitCode -ne 0) {
+        throw "AWS Batch submission failed (exit $awsExitCode):`n$($result | Out-String)"
+    }
 }
 finally {
     Remove-Item $inputPath -Force -ErrorAction SilentlyContinue

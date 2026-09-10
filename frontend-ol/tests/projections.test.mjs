@@ -240,6 +240,19 @@ test('raster requests use WMTS matrix IDs 00..13 while vector requests use integ
   }
 })
 
+test('cached vector grids overzoom their final native tile and use immutable URLs', () => {
+  const grid = api.createVectorGrid(metadata, 0, 10)
+  assert.equal(grid.getMinZoom(), 0)
+  assert.equal(grid.getMaxZoom(), 10)
+  assert.equal(grid.getZForResolution(metadata.resolutions[13]), 10)
+  assert.equal(
+    api.tileUrl('', 'planning', metadata, [10, 123, 456], 'https://tiles.example.test/cache/{z}/{x}/{y}.mvt'),
+    'https://tiles.example.test/cache/10/123/456.mvt',
+  )
+  assert.equal(api.tileUrl('', 'planning', metadata, [10, -1, 0], 'https://tiles.example.test/cache/{z}/{x}/{y}.mvt'), undefined)
+  assert.throws(() => api.createVectorGrid(metadata, 0, 14), /Cache zooms/)
+})
+
 test('tile URL range checks use advertised sizes rather than 2 ** z and reject out-of-matrix positions', () => {
   for (let z = 0; z <= 13; z++) {
     const [width, height] = metadata.sizes[z]

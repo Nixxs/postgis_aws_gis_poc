@@ -25,10 +25,24 @@ export function createGrids(data: GridDefinition) {
   const options = { origin: data.origin, resolutions: data.resolutions, tileSize: data.tileSize, sizes: data.sizes }
   return { vector: new TileGrid(options), raster: new WMTSTileGrid({ ...options, matrixIds: data.matrixIds }) }
 }
-export function tileUrl(base: string, layer: string, grid: GridDefinition, coord: number[]): string | undefined {
+export function createVectorGrid(data: GridDefinition, minZoom = 0, maxZoom = data.maxZoom): TileGrid {
+  validateGrid(data)
+  if (!Number.isInteger(minZoom) || !Number.isInteger(maxZoom) || minZoom < 0 || maxZoom < minZoom || maxZoom > data.maxZoom) {
+    throw new Error(`Cache zooms must satisfy 0 <= minZoom <= maxZoom <= ${data.maxZoom}.`)
+  }
+  return new TileGrid({
+    origin: data.origin,
+    resolutions: data.resolutions.slice(0, maxZoom + 1),
+    tileSize: data.tileSize,
+    sizes: data.sizes.slice(0, maxZoom + 1),
+    minZoom,
+  })
+}
+export function tileUrl(base: string, layer: string, grid: GridDefinition, coord: number[], template?: string): string | undefined {
   if (coord.length !== 3 || coord.some((value) => !Number.isInteger(value))) return undefined
   const [z, x, y] = coord
   const size = grid.sizes[z]
   if (!size || x < 0 || y < 0 || x >= size[0] || y >= size[1]) return undefined
+  if (template) return template.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y))
   return `${base.replace(/\/$/, '')}/tiles/vicgrid/${encodeURIComponent(layer)}/${z}/${x}/${y}.mvt`
 }

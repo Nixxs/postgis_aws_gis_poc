@@ -337,9 +337,10 @@ AWS Console. Output versions are immutable and publish `latest.json` only
 after all tiles and manifests have been uploaded.
 [infra/deploy-tilecache-cdn.ps1](infra/deploy-tilecache-cdn.ps1) publishes the
 private bucket through a dedicated CloudFront Origin Access Control with CORS
-response headers. The main MapLibre frontend resolves cache-enabled layers
-through `latest.json`, validates the immutable `tilejson.json`, and uses the
-published CloudFront MVT URL. Cache-disabled layers continue using the API.
+response headers. Both frontends resolve cache-enabled layers through
+`latest.json`, validate the immutable `tilejson.json`, and use the published
+CloudFront MVT URL. Cache-disabled layers continue using the API. MapLibre uses
+Web Mercator caches; OpenLayers uses native Vicgrid caches.
 
 #### Run a tile-cache build
 
@@ -352,25 +353,37 @@ again only when their configuration or container code changes:
 ./infra/deploy-tilecache-cdn.ps1
 ```
 
-The main MapLibre [runtime configuration](frontend/public/config.json) is the
-source of truth. Its `layers` array controls which layers are available in the
-UI. A layer's `cache.enabled` flag controls whether the config-driven builder
+Each frontend's runtime configuration is its cache-build source of truth:
+[frontend/public/config.json](frontend/public/config.json) uses `webmercator`,
+while [frontend-ol/public/config.json](frontend-ol/public/config.json) uses
+`vicgrid`. Its `layers` array controls which layers are available in that UI.
+A layer's `cache.enabled` flag controls whether the config-driven builder
 submits that same layer ID to AWS Batch. Global `tileCache` settings define the
-S3 prefix, schema, CDN origin and API-fallback policy. Main MapLibre layers
-must use the `webmercator` cache grid. If metadata discovery or validation
-fails, `fallbackToApi: true` retains the dynamic API source; setting it to
-`false` makes startup fail instead. The cache `maxZoom` is the source maximum,
-so MapLibre overzooms its final cached tile above that level rather than
-hiding the layer.
+S3 prefix, schema, CDN origin and API-fallback policy. If metadata discovery or
+validation fails, `fallbackToApi: true` retains the matching dynamic API
+source; setting it to `false` makes startup fail instead. The cache `maxZoom`
+is the source maximum, so both clients overzoom the final cached tile above
+that level rather than hiding the layer.
 
-Preview all cache-enabled builds without contacting AWS:
+Preview all cache-enabled builds for both frontends without contacting AWS:
 
 ```powershell
 ./infra/build-configured-tilecache.ps1 -ListOnly
 ```
 
-Start with config-driven Batch dry runs. These validate the PostGIS layers and
-calculate tile ranges without writing tiles:
+The default invocation reads both frontend configurations and therefore plans
+one Web Mercator and one Vicgrid build for every cache-enabled layer. To
+preview or build only the OpenLayers native caches, select its configuration:
+
+```powershell
+./infra/build-configured-tilecache.ps1 `
+  -ConfigPath ./frontend-ol/public/config.json `
+  -ListOnly
+```
+
+Start with config-driven Batch dry runs. By default these submit both
+projections, validate the PostGIS layers and calculate tile ranges without
+writing tiles:
 
 ```powershell
 ./infra/build-configured-tilecache.ps1 -DryRun
@@ -382,8 +395,13 @@ Remove `-DryRun` to perform the build:
 ./infra/build-configured-tilecache.ps1
 ```
 
+Pass either frontend configuration through `-ConfigPath` when only one
+projection should be submitted.
+
 Use `-Layer layer_id` to build only one of the cache-enabled configured layers,
 or `-Version release_name` to give every submitted build an explicit version.
+With the default two configurations, `-Layer` still submits that layer once
+per projection; combine it with `-ConfigPath` to submit only one grid.
 The orchestrator reads `grid`, `minZoom`, `maxZoom` and `fields` from each
 layer's `cache` object. It calls
 [infra/submit-tilecache.ps1](infra/submit-tilecache.ps1), which remains
@@ -405,6 +423,9 @@ pointer is:
 ```text
 https://dypzi7izkg2i6.cloudfront.net/tiles/public/au_vic_dtp_planning_scheme_all/webmercator/latest.json
 ```
+
+The corresponding OpenLayers pointer ends in `/vicgrid/latest.json` after its
+native build has been published.
 
 The same build can be submitted in the AWS Console by selecting the
 `gis-postgis-tilecache` queue and job definition and entering the equivalent
@@ -571,7 +592,7 @@ checks native raster/vector requests, two-click measurement with no `/measure`
 traffic, WGS84 drawing and spatial-query submission, result-table selection,
 login-gated parcel zoom visibility and sidebar resizing. Screenshots and failure
 traces are generated under the ignored test-results directory. The unit suite
-contains 23 tests and the browser suite contains 6 integration tests.
+contains 28 tests and the browser suite contains 6 integration tests.
 
 ### Native map, query boundary and measurement accuracy
 

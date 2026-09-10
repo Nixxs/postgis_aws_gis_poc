@@ -22,13 +22,14 @@ import { asArray } from 'ol/color'
 import { unByKey } from 'ol/Observable'
 import type { EventsKey } from 'ol/events'
 import { isEmpty } from 'ol/extent'
+import { transformExtent } from 'ol/proj'
 import type { FeatureLike } from 'ol/Feature'
 import type { AppConfig } from './config'
 import { isLayerInZoomRange } from './config'
 import type { FeatureCollection } from './api'
 import { useAuth } from './auth'
 import { createDrawingTools } from './drawingTools'
-import { createGrids, tileUrl, validateGrid } from './tileGrid'
+import { createGrids, createVectorGrid, tileUrl, validateGrid } from './tileGrid'
 import { MAP_CRS, fromWgs84, toWgs84, geojson, readOptions, equivalentZoom, resolutionForZoom } from './projections'
 import { onLayerToggle, onQueryResult, onQueryResultMulti, onClearQuery, onResultFeatureSelect, onFeatureClear, emitFeatureSelect, emitFeatureClear, emitMapZoom } from './events'
 import 'ol/ol.css'
@@ -105,9 +106,12 @@ export default function MapContainer({ config }: { config: AppConfig }) {
         configuredLayers.set(bm.id, layer); currentMap.addLayer(layer)
       }
       for (const [index, item] of config.layers.entries()) {
-        const source = new VectorTileSource({ projection: MAP_CRS, tileGrid: grids.vector, format: new MVT({ layers: [item.id], layerName: '__mvt_layer' }), wrapX: false, tileUrlFunction: (coord) => tileUrl(base, item.id, definition, coord) })
+        const cache = item.resolvedCache
+        const sourceGrid = cache ? createVectorGrid(definition, cache.minZoom, cache.maxZoom) : grids.vector
+        const extent = cache ? transformExtent(cache.bounds, 'EPSG:4326', MAP_CRS, 8) : undefined
+        const source = new VectorTileSource({ projection: MAP_CRS, extent, tileGrid: sourceGrid, format: new MVT({ layers: [item.id], layerName: '__mvt_layer' }), wrapX: false, tileUrlFunction: (coord) => tileUrl(base, item.id, definition, coord, cache?.tileUrl) })
         keys.push(source.on('tileloaderror', tileError)); sources.push(source)
-        const layer = new VectorTileLayer({ source, visible: false, style: style(item.color, item.opacity), zIndex: 100 + config.layers.length - index, properties: { configId: item.id } })
+        const layer = new VectorTileLayer({ source, extent, visible: false, style: style(item.color, item.opacity), zIndex: 100 + config.layers.length - index, properties: { configId: item.id } })
         configuredLayers.set(item.id, layer); currentMap.addLayer(layer)
       }
       const results = new VectorSource(), resultHighlight = new VectorSource(), marker = new VectorSource(), gps = new VectorSource()

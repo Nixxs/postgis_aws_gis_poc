@@ -53,15 +53,26 @@ Optional deployment settings in `infra/.env`:
 
 ## Submit from the AWS Console
 
-For normal builds, treat the main MapLibre
-`frontend/public/config.json` as the source of truth. `layers` controls the UI
-catalogue and each layer's `cache.enabled` flag controls whether it is included
-in a cache build. Preview, dry-run and build all enabled layers with:
+For normal builds, treat each frontend's runtime configuration as the source
+of truth. `frontend/public/config.json` defines Web Mercator builds and
+`frontend-ol/public/config.json` defines native Vicgrid builds. `layers`
+controls that UI's catalogue and each layer's `cache.enabled` flag controls
+whether it is included in a cache build. The default invocation reads both
+configurations, submitting Web Mercator and Vicgrid jobs for each enabled
+layer. Preview, dry-run and build both projections with:
 
 ```powershell
 ./infra/build-configured-tilecache.ps1 -ListOnly
 ./infra/build-configured-tilecache.ps1 -DryRun
 ./infra/build-configured-tilecache.ps1
+```
+
+Select one configuration when only that frontend's projection should be built:
+
+```powershell
+./infra/build-configured-tilecache.ps1 -ConfigPath ./frontend-ol/public/config.json -ListOnly
+./infra/build-configured-tilecache.ps1 -ConfigPath ./frontend-ol/public/config.json -DryRun
+./infra/build-configured-tilecache.ps1 -ConfigPath ./frontend-ol/public/config.json
 ```
 
 To select one configured, cache-enabled layer:
@@ -71,6 +82,10 @@ To select one configured, cache-enabled layer:
 	-Layer au_vic_dtp_planning_scheme_all `
 	-DryRun
 ```
+
+The default two-config invocation submits the selected layer for both grids.
+Also pass `-ConfigPath ./frontend-ol/public/config.json` (or the MapLibre path)
+when the selected layer should be built in only one projection.
 
 For an ad-hoc build that is intentionally independent of the UI catalogue, use
 the lower-level helper:
@@ -103,7 +118,7 @@ For a Web Mercator pyramid:
 For the native Vicgrid pyramid:
 
 ```text
---layer,au_vic_dtp_planning_scheme_all,--grid,vicgrid,--min-zoom,0,--max-zoom,10
+--layer,au_vic_dtp_planning_scheme_all,--grid,vicgrid,--min-zoom,0,--max-zoom,8
 ```
 
 The exact Console widget may display the command as separate fields or JSON. If it requests JSON, use:

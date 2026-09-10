@@ -1,6 +1,12 @@
 {
   "projection": "EPSG:7899",
   "tileGridUrl": "/tiles/grids/vicgrid",
+  "tileCache": {
+    "baseUrl": "https://dypzi7izkg2i6.cloudfront.net",
+    "prefix": "tiles",
+    "schema": "public",
+    "fallbackToApi": true
+  },
   "basemaps": [
     {
       "id": "vicmap_carto",
@@ -26,21 +32,42 @@
       "label": "Planning Scheme",
       "visibleByDefault": true,
       "opacity": 0.4,
-      "color": "#1976d2"
+      "color": "#1976d2",
+      "cache": {
+        "enabled": true,
+        "grid": "vicgrid",
+        "minZoom": 0,
+        "maxZoom": 8,
+        "fields": "*"
+      }
     },
     {
       "id": "au_vic_dtp_env_environmental_significance",
       "label": "Environmental Significance",
       "visibleByDefault": false,
       "opacity": 0.4,
-      "color": "#2e7d32"
+      "color": "#2e7d32",
+      "cache": {
+        "enabled": true,
+        "grid": "vicgrid",
+        "minZoom": 0,
+        "maxZoom": 8,
+        "fields": "*"
+      }
     },
     {
       "id": "au_vic_dtp_env_significant_landscape",
       "label": "Significant Landscape",
       "visibleByDefault": false,
       "opacity": 0.4,
-      "color": "#00838f"
+      "color": "#00838f",
+      "cache": {
+        "enabled": true,
+        "grid": "vicgrid",
+        "minZoom": 0,
+        "maxZoom": 8,
+        "fields": "*"
+      }
     },
     {
       "id": "au_vic_dtp_env_vegetation_protection",
@@ -48,7 +75,14 @@
       "visibleByDefault": false,
       "opacity": 0.4,
       "color": "#558b2f",
-      "requiresAuth": true
+      "requiresAuth": true,
+      "cache": {
+        "enabled": true,
+        "grid": "vicgrid",
+        "minZoom": 0,
+        "maxZoom": 8,
+        "fields": "*"
+      }
     },
     {
       "id": "au_vic_dtp_parcel",
@@ -57,7 +91,14 @@
       "opacity": 0.15,
       "color": "#ef6c00",
       "requiresAuth": true,
-      "minZoom": 14
+      "minZoom": 14,
+      "cache": {
+        "enabled": true,
+        "grid": "vicgrid",
+        "minZoom": 0,
+        "maxZoom": 8,
+        "fields": "*"
+      }
     }
   ]
 }
