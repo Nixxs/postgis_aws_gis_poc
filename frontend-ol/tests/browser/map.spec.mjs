@@ -11,6 +11,7 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(async () => {
     const events = await import('/src/events.ts')
     events.onMeasureState((state) => { window.__measure = state })
+    events.onPolygonMeasureState((state) => { window.__polygonMeasure = state })
     events.onSpatialDrawComplete(({ geometry }) => { window.__geometry = geometry })
     events.onMapZoom(({ zoom }) => { window.__zoom = zoom })
   })
@@ -134,4 +135,35 @@ test('login-gated parcels use equivalent zoom and sidebar collapse resizes the m
   const before = await page.locator('.vicgrid-map').boundingBox()
   await page.getByRole('button', { name: 'Hide panel', exact: true }).click()
   await expect.poll(async () => (await page.locator('.vicgrid-map').boundingBox()).width).toBeGreaterThan(before.width + 300)
+})
+
+test('selected polygon fetches complete geometry and measures locally without a polygon measurement request', async ({ page }) => {
+  const polygonMeasurementRequests = []
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.endsWith('/measure/polygon')) polygonMeasurementRequests.push(request.url())
+  })
+  await page.getByRole('button', { name: 'Measure polygon', exact: true }).click()
+  const map = page.locator('.vicgrid-map')
+  const bounds = await map.boundingBox()
+  const queryResponses = []
+  page.on('response', (response) => {
+    if (response.url().endsWith('/query') && response.request().method() === 'POST') queryResponses.push(response)
+  })
+  for (const x of [0.3, 0.5, 0.7]) {
+    for (const y of [0.25, 0.5, 0.75]) {
+      await page.getByRole('button', { name: /Select (feature|another)/ }).click()
+      await map.click({ position: { x: bounds.width * x, y: bounds.height * y } })
+      await expect.poll(() => page.evaluate(() => window.__polygonMeasure.status)).not.toBe('selecting')
+      if (await page.evaluate(() => ['loading', 'complete'].includes(window.__polygonMeasure.status))) break
+    }
+    if (await page.evaluate(() => ['loading', 'complete'].includes(window.__polygonMeasure.status))) break
+  }
+  await expect(page.getByText('Measurement complete', { exact: true })).toBeVisible()
+  expect(queryResponses).toHaveLength(1)
+  expect(queryResponses[0].ok()).toBeTruthy()
+  await expect(page.getByRole('table', { name: 'Polygon area and perimeter' })).toContainText('Perimeter')
+  const firstSegment = page.getByRole('table', { name: 'Polygon segment measurements' }).getByRole('row').nth(1)
+  await expect(firstSegment).toBeVisible()
+  await firstSegment.hover()
+  expect(polygonMeasurementRequests).toEqual([])
 })

@@ -3,7 +3,9 @@ import { register } from 'ol/proj/proj4'
 import { transform } from 'ol/proj'
 import GeoJSON from 'ol/format/GeoJSON'
 import type Geometry from 'ol/geom/Geometry'
-import type { MeasurementPosition, MeasurementResult } from './api'
+import Polygon from 'ol/geom/Polygon'
+import MultiPolygon from 'ol/geom/MultiPolygon'
+import type { MeasurementPosition, MeasurementResult, PolygonMeasurementResult } from './api'
 import type { DrawGeometry } from './events'
 
 export const MAP_CRS = 'EPSG:7899'
@@ -29,6 +31,35 @@ export function measureDistance(start: number[], end: number[]): MeasurementResu
   const distance = Math.hypot(b[0] - a[0], b[1] - a[1])
   if (!Number.isFinite(distance)) throw new Error('Unable to measure these positions in MGA zone 55.')
   return { distance, units: 'metres', sourceCrs: MAP_CRS, measurementCrs: MEASURE_CRS }
+}
+
+export function measurePolygonGeometry(geometry: Geometry): PolygonMeasurementResult {
+  if (!(geometry instanceof Polygon) && !(geometry instanceof MultiPolygon)) {
+    throw new Error('Select a polygon or multipolygon feature.')
+  }
+  const projected = geometry.clone().transform(MAP_CRS, MEASURE_CRS)
+  const polygons = projected instanceof Polygon ? [projected.getCoordinates()] : projected.getCoordinates()
+  const segments: PolygonMeasurementResult['segments'] = []
+  let perimeter = 0
+  polygons.forEach((rings, polygonIndex) => rings.forEach((ring, ringIndex) => {
+    for (let segmentIndex = 0; segmentIndex < ring.length - 1; segmentIndex++) {
+      const start = ring[segmentIndex]
+      const end = ring[segmentIndex + 1]
+      const length = Math.hypot(end[0] - start[0], end[1] - start[1])
+      if (!Number.isFinite(length)) throw new Error('Unable to measure this polygon in MGA zone 55.')
+      perimeter += length
+      segments.push({ polygonIndex, ringIndex, segmentIndex, length })
+    }
+  }))
+  const area = projected.getArea()
+  if (!Number.isFinite(area) || area < 0 || !Number.isFinite(perimeter)) {
+    throw new Error('Unable to measure this polygon in MGA zone 55.')
+  }
+  return {
+    area, perimeter, segments,
+    lengthUnits: 'metres', areaUnits: 'square_metres',
+    sourceCrs: MAP_CRS, measurementCrs: MEASURE_CRS,
+  }
 }
 
 // Keep copied minZoom/maxZoom rules comparable to MapLibre's 512px zoom scale,

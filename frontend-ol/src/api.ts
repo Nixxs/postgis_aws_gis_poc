@@ -29,6 +29,23 @@ export type FeatureCollection = {
   }>
 }
 
+export interface PolygonSegmentMeasurement {
+  polygonIndex: number
+  ringIndex: number
+  segmentIndex: number
+  length: number
+}
+
+export interface PolygonMeasurementResult {
+  area: number
+  perimeter: number
+  segments: PolygonSegmentMeasurement[]
+  lengthUnits: 'metres'
+  areaUnits: 'square_metres'
+  sourceCrs: 'EPSG:7899'
+  measurementCrs: 'EPSG:7855'
+}
+
 export type SpatialQueryResult = FeatureCollection & {
   layer: string
   count: number
@@ -67,6 +84,22 @@ export function queryLayer(layer: string, where: string, recordCount = 1000) {
       f: 'geojson',
       resultRecordCount: recordCount,
     }),
+  })
+}
+
+export function queryFeatureByObjectId(layer: string, objectId: string | number, signal?: AbortSignal) {
+  const id = String(objectId)
+  if (!/^\d+$/.test(id)) throw new Error('The selected feature has an invalid OBJECTID.')
+  return json<FeatureCollection>('/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      layer,
+      where: `"OBJECTID" = ${id}`,
+      f: 'geojson',
+      resultRecordCount: 2,
+    }),
+    signal,
   })
 }
 

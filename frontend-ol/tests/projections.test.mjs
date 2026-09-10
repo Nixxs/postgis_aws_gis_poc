@@ -17,6 +17,7 @@ const compiled = await build({
       export { default as View } from 'ol/View';
       export { default as Point } from 'ol/geom/Point';
       export { default as Polygon } from 'ol/geom/Polygon';
+      export { default as MultiPolygon } from 'ol/geom/MultiPolygon';
       export { default as WMTS } from 'ol/source/WMTS';
       export { get as getProjection } from 'ol/proj';
     `,
@@ -331,4 +332,53 @@ test('API query/spatial requests preserve existing JSON contracts and WGS84 geom
   assert.deepEqual(requests[3], { url: 'https://api.example.test/spatial-query', body: { layer: 'parcel', geometry: polygon, buffer: 100 } })
   close(requests[2].body.geometry.coordinates, knownWgs84)
   close(requests[3].body.geometry.coordinates, [ring])
+})
+
+test('polygon area, perimeter and every ring segment are measured locally in MGA55', (t) => {
+  noNetwork(t)
+  const outer = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
+  const hole = [[2, 2], [2, 4], [4, 4], [4, 2], [2, 2]]
+  const polygon = new api.Polygon([outer, hole]).transform(api.MEASURE_CRS, api.MAP_CRS)
+  const original = polygon.getCoordinates().map((ring) => ring.map((point) => point.slice()))
+  const result = api.measurePolygonGeometry(polygon)
+  close(result.area, 96, 1e-5)
+  close(result.perimeter, 48, 1e-5)
+  assert.equal(result.segments.length, 8)
+  assert.deepEqual(result.segments.map(({ polygonIndex, ringIndex, segmentIndex }) => [polygonIndex, ringIndex, segmentIndex]), [
+    [0, 0, 0], [0, 0, 1], [0, 0, 2], [0, 0, 3],
+    [0, 1, 0], [0, 1, 1], [0, 1, 2], [0, 1, 3],
+  ])
+  assert.deepEqual({ ...result, area: 0, perimeter: 0, segments: [] }, {
+    area: 0, perimeter: 0, segments: [], lengthUnits: 'metres', areaUnits: 'square_metres',
+    sourceCrs: 'EPSG:7899', measurementCrs: 'EPSG:7855',
+  })
+  assert.deepEqual(polygon.getCoordinates(), original)
+})
+
+test('multipolygon measurement preserves part indexes and rejects non-polygons without fetching', (t) => {
+  noNetwork(t)
+  const first = [[[0, 0], [3, 0], [3, 3], [0, 3], [0, 0]]]
+  const second = [[[10, 10], [12, 10], [12, 12], [10, 12], [10, 10]]]
+  const geometry = new api.MultiPolygon([first, second]).transform(api.MEASURE_CRS, api.MAP_CRS)
+  const result = api.measurePolygonGeometry(geometry)
+  close(result.area, 13, 1e-5)
+  close(result.perimeter, 20, 1e-5)
+  assert.equal(result.segments.length, 8)
+  assert.deepEqual([...new Set(result.segments.map((segment) => segment.polygonIndex))], [0, 1])
+  assert.throws(() => api.measurePolygonGeometry(new api.Point(knownNative)), /polygon or multipolygon/)
+})
+
+test('feature lookup validates OBJECTID and requests one authoritative GeoJSON feature', async (t) => {
+  const response = { type: 'FeatureCollection', features: [] }
+  const fetch = t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => response }))
+  assert.equal(await api.queryFeatureByObjectId('parcel', 17), response)
+  assert.equal(fetch.mock.callCount(), 1)
+  const [url, request] = fetch.mock.calls[0].arguments
+  assert.equal(url, 'https://api.example.test/query')
+  assert.equal(request.method, 'POST')
+  assert.deepEqual(JSON.parse(request.body), {
+    layer: 'parcel', where: '"OBJECTID" = 17', f: 'geojson', resultRecordCount: 2,
+  })
+  assert.throws(() => api.queryFeatureByObjectId('parcel', '17 OR 1=1'), /invalid OBJECTID/)
+  assert.equal(fetch.mock.callCount(), 1)
 })

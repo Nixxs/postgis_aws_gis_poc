@@ -1,5 +1,5 @@
 import mitt from 'mitt'
-import type { FeatureCollection, MeasurementPosition, MeasurementResult } from './api'
+import type { FeatureCollection, MeasurementPosition, MeasurementResult, PolygonMeasurementResult } from './api'
 
 export interface MeasureState {
   status: 'unavailable' | 'idle' | 'drawing' | 'loading' | 'complete' | 'error'
@@ -7,6 +7,15 @@ export interface MeasureState {
   result?: MeasurementResult
   error?: string
 }
+
+export interface PolygonMeasureState {
+  status: 'unavailable' | 'idle' | 'selecting' | 'loading' | 'complete' | 'error'
+  layer?: string
+  objectId?: string
+  result?: PolygonMeasurementResult
+  error?: string
+}
+export interface PolygonSegmentEvent { polygonIndex: number; ringIndex: number; segmentIndex: number }
 
 export interface LayerToggleEvent { id: string; visible: boolean }
 export interface QueryResultEvent { layer: string; geojson: FeatureCollection }
@@ -25,6 +34,11 @@ type Events = {
   measureClear: void
   measureRetry: void
   measureState: MeasureState
+  polygonMeasureStart: void
+  polygonMeasureClear: void
+  polygonMeasureRetry: void
+  polygonMeasureState: PolygonMeasureState
+  polygonSegmentHover: PolygonSegmentEvent | null
   layerToggle: LayerToggleEvent
   queryResult: QueryResultEvent
   queryResultMulti: QueryResultMultiEvent
@@ -51,6 +65,18 @@ export function onMeasureRetry(fn: () => void): () => void { bus.on('measureRetr
 let measureState: MeasureState = { status: 'unavailable', points: [] }
 export function emitMeasureState(state: MeasureState) { measureState = state; bus.emit('measureState', state) }
 export function onMeasureState(fn: (state: MeasureState) => void): () => void { bus.on('measureState', fn); fn(measureState); return () => bus.off('measureState', fn) }
+
+export function emitPolygonMeasureStart() { bus.emit('polygonMeasureStart') }
+export function onPolygonMeasureStart(fn: () => void): () => void { bus.on('polygonMeasureStart', fn); return () => bus.off('polygonMeasureStart', fn) }
+export function emitPolygonMeasureClear() { bus.emit('polygonMeasureClear') }
+export function onPolygonMeasureClear(fn: () => void): () => void { bus.on('polygonMeasureClear', fn); return () => bus.off('polygonMeasureClear', fn) }
+export function emitPolygonMeasureRetry() { bus.emit('polygonMeasureRetry') }
+export function onPolygonMeasureRetry(fn: () => void): () => void { bus.on('polygonMeasureRetry', fn); return () => bus.off('polygonMeasureRetry', fn) }
+let polygonMeasureState: PolygonMeasureState = { status: 'unavailable' }
+export function emitPolygonMeasureState(state: PolygonMeasureState) { polygonMeasureState = state; bus.emit('polygonMeasureState', state) }
+export function onPolygonMeasureState(fn: (state: PolygonMeasureState) => void): () => void { bus.on('polygonMeasureState', fn); fn(polygonMeasureState); return () => bus.off('polygonMeasureState', fn) }
+export function emitPolygonSegmentHover(event: PolygonSegmentEvent | null) { bus.emit('polygonSegmentHover', event) }
+export function onPolygonSegmentHover(fn: (event: PolygonSegmentEvent | null) => void): () => void { bus.on('polygonSegmentHover', fn); return () => bus.off('polygonSegmentHover', fn) }
 
 export function emitLayerToggle(event: LayerToggleEvent) { bus.emit('layerToggle', event) }
 export function onLayerToggle(fn: (e: LayerToggleEvent) => void): () => void { bus.on('layerToggle', fn); return () => bus.off('layerToggle', fn) }

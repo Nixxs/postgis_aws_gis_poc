@@ -29,9 +29,10 @@ import { isLayerInZoomRange } from './config'
 import type { FeatureCollection } from './api'
 import { useAuth } from './auth'
 import { createDrawingTools } from './drawingTools'
+import { createPolygonMeasureSelect } from './polygonMeasureSelect'
 import { createGrids, createVectorGrid, tileUrl, validateGrid } from './tileGrid'
 import { MAP_CRS, fromWgs84, toWgs84, geojson, readOptions, equivalentZoom, resolutionForZoom } from './projections'
-import { onLayerToggle, onQueryResult, onQueryResultMulti, onClearQuery, onResultFeatureSelect, onFeatureClear, emitFeatureSelect, emitFeatureClear, emitMapZoom } from './events'
+import { onLayerToggle, onQueryResult, onQueryResultMulti, onClearQuery, onResultFeatureSelect, onFeatureClear, emitFeatureSelect, emitFeatureClear, emitMapZoom, emitMeasureClear, emitSpatialDrawClear, onMeasureStart, onSpatialDrawStart, onPolygonMeasureStart, onPolygonMeasureClear, onPolygonMeasureRetry } from './events'
 import 'ol/ol.css'
 import './map.css'
 
@@ -76,6 +77,7 @@ export default function MapContainer({ config }: { config: AppConfig }) {
     let map: Map | undefined
     let resize: ResizeObserver | undefined
     let drawing: ReturnType<typeof createDrawingTools> | undefined
+    let polygonMeasure: ReturnType<typeof createPolygonMeasureSelect> | undefined
     const sources: Array<VectorSource | VectorTileSource | WMTS> = []
     const configuredLayers = new globalThis.Map<string, BaseLayer>()
     const requested = new globalThis.Map([...config.layers, ...(config.basemaps ?? [])].map((l) => [l.id, l.visibleByDefault]))
@@ -159,8 +161,20 @@ export default function MapContainer({ config }: { config: AppConfig }) {
         fit(resultHighlight, nativeFeature.getGeometry() instanceof Point ? Math.max(15, equivalentZoom(view.getResolution()!, toWgs84(view.getCenter()!)[1])) : 16, 60)
       }))
       drawing = createDrawingTools(currentMap)
+      polygonMeasure = createPolygonMeasureSelect(currentMap)
+      subscriptions.push(onPolygonMeasureStart(() => {
+        emitSpatialDrawClear()
+        emitMeasureClear()
+        emitFeatureClear()
+        polygonMeasure?.start()
+      }))
+      subscriptions.push(onPolygonMeasureClear(() => polygonMeasure?.clear()))
+      subscriptions.push(onPolygonMeasureRetry(() => polygonMeasure?.retry()))
+      subscriptions.push(onSpatialDrawStart(() => polygonMeasure?.clear()))
+      subscriptions.push(onMeasureStart(() => polygonMeasure?.clear()))
       keys.push(currentMap.on('singleclick', (event) => {
-        if (drawing?.isActive()) return
+        if (polygonMeasure?.isSelecting()) { polygonMeasure.select(event); return }
+        if (drawing?.isActive() || polygonMeasure?.isActive()) return
         currentMap.forEachFeatureAtPixel(event.pixel, (feature, layer) => {
           const id = layer.get('configId') as string
           const properties = propertiesOf(feature)
@@ -177,7 +191,7 @@ export default function MapContainer({ config }: { config: AppConfig }) {
         }, { layerFilter: (layer) => !!layer.get('configId'), hitTolerance: 3 })
       }))
       keys.push(currentMap.on('pointermove', (event) => {
-        if (drawing?.isActive() || event.dragging) return
+        if (drawing?.isActive() || polygonMeasure?.isActive() || event.dragging) return
         currentMap.getViewport().style.cursor = currentMap.hasFeatureAtPixel(event.pixel, { layerFilter: (layer) => !!layer.get('configId'), hitTolerance: 3 }) ? 'pointer' : ''
       }))
       resize = new ResizeObserver(() => currentMap.updateSize()); resize.observe(target)
@@ -187,7 +201,7 @@ export default function MapContainer({ config }: { config: AppConfig }) {
       if (!abort.signal.aborted) { setError(e instanceof Error ? e.message : String(e)); setLoading(false) }
     })
     return () => {
-      abort.abort(); subscriptions.forEach((off) => off()); unByKey(keys); resize?.disconnect(); drawing?.destroy()
+      abort.abort(); subscriptions.forEach((off) => off()); unByKey(keys); resize?.disconnect(); polygonMeasure?.destroy(); drawing?.destroy()
       authChangedRef.current = () => {}; markerRef.current = null; gpsRef.current = null; mapRef.current = null
       map?.getLayers().forEach((layer) => layer.dispose()); map?.dispose(); sources.forEach((source) => source.dispose())
     }

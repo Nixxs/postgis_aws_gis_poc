@@ -317,6 +317,12 @@ row highlights that exact edge on the map. Selecting a spatial or distance
 drawing tool cancels polygon selection; **Clear** or Escape cancels an
 outstanding selection or request.
 
+The OpenLayers sibling also retrieves the complete geometry by `OBJECTID`, but
+does not call `/measure/polygon`. It reads the WGS84 query result into the
+native EPSG:7899 map, transforms a clone to EPSG:7855 and calculates area,
+perimeter and indexed segment lengths locally. This preserves authoritative
+geometry while avoiding a separate measurement request.
+
 #### Coordinate systems and error responses
 
 | Operation | Input / grid | Output |
@@ -565,7 +571,8 @@ application. Both use the shared API; neither frontend replaces the other.
 
 The OpenLayers sibling retains the same layer controls, attribute queries,
 spatial queries, buffer intersections, result tables, feature information,
-location controls and two-point measurement workflow. Mock login is
+location controls, two-point measurement and polygon feature measurement
+workflows. Mock login is
 **demo / demo**. It only gates UI visibility, including restricted basemaps and
 parcels; it is **not security**, and the shared API does not enforce that login.
 
@@ -627,10 +634,11 @@ database or WMTS connection are required.
 [frontend-ol/tests/projections.test.mjs](frontend-ol/tests/projections.test.mjs)
 covers the PostGIS coordinate fixture (1 mm tolerance), WGS84 point/polygon and
 query-result round trips, the original 1109.9241542897053 m measurement scenario
-(1 cm tolerance), invalid/zero/symmetric measurements, all 14 matrix levels,
-tile bounds and URL conventions, parcel zoom translation and mocked query/API
-contracts. A throwing `fetch` stub verifies local measurement does not access
-the network. [frontend-ol/tests/drawing.test.mjs](frontend-ol/tests/drawing.test.mjs)
+(1 cm tolerance), Polygon/MultiPolygon area, perimeter and segment indexing,
+invalid/zero/symmetric measurements, all 14 matrix levels, tile bounds and URL
+conventions, parcel zoom translation and mocked query/API contracts. Throwing
+`fetch` stubs verify that local calculations do not access the network.
+[frontend-ol/tests/drawing.test.mjs](frontend-ol/tests/drawing.test.mjs)
 additionally exercises real OL drawing interactions, completion/cancellation,
 mode switching, navigation suppression and cleanup.
 
@@ -645,10 +653,11 @@ npm run test:browser
 
 The browser suite starts or reuses the frontend on http://127.0.0.1:5174 and
 checks native raster/vector requests, two-click measurement with no `/measure`
+traffic, polygon selection and local calculation with no `/measure/polygon`
 traffic, WGS84 drawing and spatial-query submission, result-table selection,
 login-gated parcel zoom visibility and sidebar resizing. Screenshots and failure
 traces are generated under the ignored test-results directory. The unit suite
-contains 28 tests and the browser suite contains 6 integration tests.
+contains 31 tests and the browser suite contains 7 integration tests.
 
 ### Native map, query boundary and measurement accuracy
 
@@ -676,6 +685,10 @@ contains 28 tests and the browser suite contains 6 integration tests.
   reports metres, not geodesic, terrain or route distance. The existing server
   `/measure` endpoint remains available to the original frontend. Zone 55 is
   not automatically changed to zone 54 for western Victoria.
+- OpenLayers polygon measurement uses the rendered tile only to identify its
+  layer and `OBJECTID`. It calls `/query` for complete WGS84 GeoJSON, renders it
+  in EPSG:7899, and transforms a clone to EPSG:7855 for client-side area,
+  perimeter and per-edge calculations. It makes **no `/measure/polygon` call**.
 - WGS84 conversions use a **null datum transformation**, not a survey-grade
   or coordinate-epoch-aware WGS84/GDA2020 transformation. The numeric tests
   establish agreement with recorded fixtures, not survey/epoch accuracy.
