@@ -7,7 +7,8 @@ import { onLayerToggle, onQueryResult, onQueryResultMulti, onClearQuery, onSpati
 import { createSpatialDraw, type SpatialDraw } from './spatialDraw'
 import { GoToLatLngControl } from './GoToLatLngControl'
 import { createMeasureDraw } from './measureDraw'
-import { onMeasureStart, onMeasureClear, onMeasureRetry, emitSpatialDrawClear, emitFeatureClear } from './events'
+import { createPolygonMeasureSelect } from './polygonMeasureSelect'
+import { onMeasureStart, onMeasureClear, onMeasureRetry, emitSpatialDrawClear, emitFeatureClear, onPolygonMeasureStart, onPolygonMeasureClear, onPolygonMeasureRetry, emitPolygonMeasureClear } from './events'
 
 const CONFIGURED_TILE_API_BASE = (import.meta.env.VITE_TILE_API_URL || '').replace(/\/$/, '')
 const TILE_API_BASE = /^https?:\/\//i.test(CONFIGURED_TILE_API_BASE)
@@ -74,9 +75,12 @@ export default function MapContainer({ config }: { config: AppConfig }) {
     map.on('load', () => {
       let draw: SpatialDraw | null = null
       let measurement: ReturnType<typeof createMeasureDraw> | null = null
+      let polygonMeasurement: ReturnType<typeof createPolygonMeasureSelect> | null = null
       for (const bm of config.basemaps ?? []) if (!bm.requiresAuth && bm.visibleByDefault) addRasterBasemap(map, bm, config.basemaps ?? [])
       for (const layer of config.layers) if (!layer.requiresAuth && layer.visibleByDefault) addVectorLayer(map, layer, config.layers)
+      polygonMeasurement = createPolygonMeasureSelect(map, config.layers.map((layer) => layer.id))
       map.on('click', (e) => {
+        if (polygonMeasurement?.isActive()) { polygonMeasurement.select(e); return }
         if (draw?.isActive() || measurement?.isActive()) return
         const fillLayerIds = config.layers.map((layer) => `${layer.id}-fill`).filter((id) => map.getLayer(id))
         const feature = fillLayerIds.length ? map.queryRenderedFeatures(e.point, { layers: fillLayerIds })[0] : undefined
@@ -87,6 +91,7 @@ export default function MapContainer({ config }: { config: AppConfig }) {
         emitFeatureSelect({ layer: String(feature.source), properties: feature.properties ?? {} })
       })
       map.on('mousemove', (e) => {
+        if (polygonMeasurement?.isActive()) return
         if (draw?.isActive() || measurement?.isActive()) return
         const fillLayerIds = config.layers.map((layer) => `${layer.id}-fill`).filter((id) => map.getLayer(id))
         map.getCanvas().style.cursor = fillLayerIds.length && map.queryRenderedFeatures(e.point, { layers: fillLayerIds }).length ? 'pointer' : ''
@@ -102,14 +107,17 @@ export default function MapContainer({ config }: { config: AppConfig }) {
       subs.push(onResultFeatureSelect((e) => { const geometry = e.feature?.geometry as any; if (!geometry) return; (map.getSource('result-highlight') as maplibregl.GeoJSONSource).setData({ type: 'FeatureCollection', features: [e.feature as any] } as any); const bounds = new maplibregl.LngLatBounds(); extendBounds(bounds, geometry.coordinates); if (geometry.type === 'Point') map.easeTo({ center: bounds.getCenter(), zoom: Math.max(map.getZoom(), 15) }); else map.fitBounds(bounds, { padding: 60, maxZoom: 16 }) }))
       draw = createSpatialDraw(map, (geometry) => emitSpatialDrawComplete({ geometry }))
       measurement = createMeasureDraw(map)
-      subs.push(onSpatialDrawStart((e) => { measurement?.clear(); draw?.start(e.mode) }))
+      subs.push(onSpatialDrawStart((e) => { measurement?.clear(); polygonMeasurement?.clear(); draw?.start(e.mode) }))
       subs.push(onSpatialDrawFinish(() => draw?.finish()))
       subs.push(onSpatialDrawClear(() => { if (!measurement?.isActive()) draw?.clear() }))
       subs.push(onSpatialDrawGeometry((e) => draw?.showGeometry(e.geometry)))
-      subs.push(onMeasureStart(() => { emitSpatialDrawClear(); emitFeatureClear(); measurement?.start() }))
+      subs.push(onMeasureStart(() => { emitSpatialDrawClear(); emitFeatureClear(); polygonMeasurement?.clear(); measurement?.start() }))
       subs.push(onMeasureClear(() => measurement?.clear()))
       subs.push(onMeasureRetry(() => measurement?.retry()))
-      subs.push(() => { measurement?.destroy(); draw?.destroy() })
+      subs.push(onPolygonMeasureStart(() => { emitSpatialDrawClear(); emitFeatureClear(); measurement?.clear(); polygonMeasurement?.start() }))
+      subs.push(onPolygonMeasureClear(() => polygonMeasurement?.clear()))
+      subs.push(onPolygonMeasureRetry(() => polygonMeasurement?.retry()))
+      subs.push(() => { emitPolygonMeasureClear(); polygonMeasurement?.destroy(); measurement?.destroy(); draw?.destroy() })
     })
     return () => { subs.forEach((off) => off()); map.remove(); mapRef.current = null }
   }, [config])

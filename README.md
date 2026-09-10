@@ -79,6 +79,7 @@ deployment; check its `/docs` or `/openapi.json` to confirm.
 | POST | `/query` | Attribute/spatial filtering, paging and count queries |
 | POST | `/spatial-query` | Intersections with a drawn geometry and optional metre buffer |
 | POST | `/measure` | Projected distance between two WGS84 positions |
+| POST | `/measure/polygon` | Projected area, perimeter and edge lengths for a WGS84 Polygon or MultiPolygon |
 | GET | `/tiles/{layer}/{z}/{x}/{y}.mvt` | Web Mercator vector tiles for MapLibre |
 | GET | `/tiles/grids/vicgrid` | Native Vicgrid grid definition for OpenLayers |
 | GET | `/tiles/vicgrid/{layer}/{z}/{x}/{y}.mvt` | Native GDA2020 / Vicgrid vector tiles |
@@ -262,12 +263,67 @@ the installed PostGIS/PROJ environment. Zone 55 covers 144–150° E, including
 Melbourne. Western Victoria is in zone 54; the endpoint does not automatically
 select a zone. This is not a geodesic, road-route or terrain distance.
 
+#### Polygon measurement
+
+`POST /measure/polygon` accepts one WGS84 GeoJSON Polygon or MultiPolygon.
+Rings must be closed, contain at least three distinct vertices, and together
+contain no more than 10,000 positions:
+
+```json
+{
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[
+      [144.9500, -37.8200],
+      [144.9510, -37.8200],
+      [144.9510, -37.8190],
+      [144.9500, -37.8190],
+      [144.9500, -37.8200]
+    ]]
+  }
+}
+```
+
+PostGIS validates the polygon, transforms it once to EPSG:7855, and returns its
+area, total boundary perimeter, and every edge length in source ring order:
+
+```json
+{
+  "area": 9780.5,
+  "perimeter": 395.2,
+  "segments": [
+    { "polygonIndex": 0, "ringIndex": 0, "segmentIndex": 0, "length": 88.1 }
+  ],
+  "lengthUnits": "metres",
+  "areaUnits": "square_metres",
+  "sourceCrs": "EPSG:4326",
+  "measurementCrs": "EPSG:7855"
+}
+```
+
+`polygonIndex` identifies each zero-based MultiPolygon part. Within each part,
+ring zero is the exterior ring and later ring indexes identify holes. The
+perimeter includes exterior and interior rings, while valid holes are
+subtracted from the area. Self-intersections and other invalid polygon
+topologies return HTTP 422. These are projected grid measurements with the
+same zone 55 limitations as `/measure`.
+
+The MapLibre sidebar's **Measure polygon** tool retrieves the clicked feature's
+complete database geometry by its `OBJECTID` before calling this endpoint. It
+does not measure clipped or simplified vector-tile geometry. The selected
+polygon is highlighted on the map, and the panel displays area, perimeter and
+the indexed length of every segment. Hovering or keyboard-focusing a segment
+row highlights that exact edge on the map. Selecting a spatial or distance
+drawing tool cancels polygon selection; **Clear** or Escape cancels an
+outstanding selection or request.
+
 #### Coordinate systems and error responses
 
 | Operation | Input / grid | Output |
 | --- | --- | --- |
 | `/query`, `/spatial-query` | EPSG:4326 GeoJSON when supplying geometry | EPSG:4326 geometry when returning GeoJSON |
 | `/measure` | EPSG:4326 coordinate pairs | Distance in metres calculated in EPSG:7855 |
+| `/measure/polygon` | EPSG:4326 GeoJSON Polygon or MultiPolygon | Area and boundary lengths calculated in EPSG:7855 |
 | Web Mercator tiles | Standard EPSG:3857 XYZ grid | MVT tile-local coordinates |
 | Native Vicgrid tiles | Vicmap EPSG:7899 grid | MVT tile-local coordinates |
 

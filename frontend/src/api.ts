@@ -29,6 +29,35 @@ export type FeatureCollection = {
   }>
 }
 
+export interface PolygonGeometry {
+  type: 'Polygon'
+  coordinates: number[][][]
+}
+
+export interface MultiPolygonGeometry {
+  type: 'MultiPolygon'
+  coordinates: number[][][][]
+}
+
+export type PolygonalGeometry = PolygonGeometry | MultiPolygonGeometry
+
+export interface PolygonSegmentMeasurement {
+  polygonIndex: number
+  ringIndex: number
+  segmentIndex: number
+  length: number
+}
+
+export interface PolygonMeasurementResult {
+  area: number
+  perimeter: number
+  segments: PolygonSegmentMeasurement[]
+  lengthUnits: 'metres'
+  areaUnits: 'square_metres'
+  sourceCrs: 'EPSG:4326'
+  measurementCrs: 'EPSG:7855'
+}
+
 export type SpatialQueryResult = FeatureCollection & {
   layer: string
   count: number
@@ -70,6 +99,22 @@ export function queryLayer(layer: string, where: string, recordCount = 1000) {
   })
 }
 
+export function queryFeatureByObjectId(layer: string, objectId: string | number, signal?: AbortSignal) {
+  const id = String(objectId)
+  if (!/^\d+$/.test(id)) throw new Error('The selected feature has an invalid OBJECTID.')
+  return json<FeatureCollection>('/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      layer,
+      where: `"OBJECTID" = ${id}`,
+      f: 'geojson',
+      resultRecordCount: 2,
+    }),
+    signal,
+  })
+}
+
 export function spatialQuery(layer: string, geometry: unknown, bufferMeters = 0) {
   return json<SpatialQueryResult>('/spatial-query', {
     method: 'POST',
@@ -102,6 +147,32 @@ export async function measureDistance(start: MeasurementPosition, end: Measureme
   const result = await response.json() as MeasurementResult
   if (!Number.isFinite(result.distance) || result.distance < 0 || result.units !== 'metres' || result.measurementCrs !== 'EPSG:7855') {
     throw new Error('Unexpected measurement response. The API must return metres in EPSG:7855.')
+  }
+  return result
+}
+
+export async function measurePolygon(geometry: PolygonalGeometry, signal?: AbortSignal) {
+  const response = await fetch(`${API_BASE}/measure/polygon`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ geometry }),
+    signal,
+  })
+  if (!response.ok) {
+    if (response.status === 404) throw new Error('Polygon measurement endpoint unavailable. Deploy the API with the /measure/polygon route.')
+    const data = await response.json().catch(() => null)
+    const detail = data?.detail
+    throw new Error(typeof detail === 'string' ? detail : `Polygon measurement failed (${response.status}).`)
+  }
+  const result = await response.json() as PolygonMeasurementResult
+  const validSegments = Array.isArray(result.segments) && result.segments.every((segment) =>
+    Number.isInteger(segment.polygonIndex) && segment.polygonIndex >= 0 &&
+    Number.isInteger(segment.ringIndex) && segment.ringIndex >= 0 &&
+    Number.isInteger(segment.segmentIndex) && segment.segmentIndex >= 0 &&
+    Number.isFinite(segment.length) && segment.length >= 0)
+  if (!Number.isFinite(result.area) || result.area < 0 || !Number.isFinite(result.perimeter) || result.perimeter < 0 ||
+      !validSegments || result.lengthUnits !== 'metres' || result.areaUnits !== 'square_metres' || result.measurementCrs !== 'EPSG:7855') {
+    throw new Error('Unexpected polygon measurement response. The API must return area and segment lengths in EPSG:7855.')
   }
   return result
 }
