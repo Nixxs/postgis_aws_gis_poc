@@ -24,20 +24,30 @@ function Import-DotEnv([string]$Path) {
 
 function Invoke-Aws([string[]]$Arguments) {
     $previousPreference = $ErrorActionPreference
+    $errorFile = [System.IO.Path]::GetTempFileName()
     try {
         $ErrorActionPreference = "Continue"
-        $result = (& aws @Arguments --profile $settings.AWS_PROFILE --region $settings.AWS_REGION --no-cli-pager 2>&1 | Out-String).Trim()
+        $result = (& aws @Arguments --profile $settings.AWS_PROFILE --region $settings.AWS_REGION --no-cli-pager 2>$errorFile | Out-String).Trim()
         $exitCode = $LASTEXITCODE
+        $errorText = [System.IO.File]::ReadAllText($errorFile).Trim()
     }
-    finally { $ErrorActionPreference = $previousPreference }
-    if ($exitCode -ne 0) { throw "AWS command failed: aws $($Arguments -join ' ')`n$result" }
+    finally {
+        $ErrorActionPreference = $previousPreference
+        Remove-Item $errorFile -Force -ErrorAction SilentlyContinue
+    }
+    if ($exitCode -ne 0) { throw "AWS command failed: aws $($Arguments -join ' ')`n$errorText`n$result" }
     return $result
 }
 
 function Get-AwsValue([string[]]$Arguments) {
-    $value = Invoke-Aws -Arguments ($Arguments + @("--output", "text"))
-    if ($value -eq "None") { return "" }
-    return $value
+    $json = Invoke-Aws -Arguments ($Arguments + @("--output", "json"))
+    $value = ConvertFrom-Json -InputObject $json
+    if ($null -eq $value) { return "" }
+    if ($value -isnot [string] -and $value -isnot [ValueType]) {
+        throw "AWS scalar lookup returned a collection instead of a single value."
+    }
+    if ([string]$value -match '[\r\n]') { throw "AWS scalar lookup returned a multiline value." }
+    return [string]$value
 }
 
 # File-backed JSON prevents Windows PowerShell from stripping quotes.

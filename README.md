@@ -708,11 +708,249 @@ translation, not an exact projection-scale correction. For example, parcel
 Melbourne, not an attempt to request native matrix 14. The lower zoom bound
 is inclusive and the upper bound exclusive.
 
+### DTP non-production deployment steps
+
+The DTP deployment is restartable and divided into phases because source data
+must be imported after RDS exists but before cached tiles are built. It uses the
+pre-provisioned ECS/Batch roles and therefore makes no IAM role or policy
+changes. The current deployment profile is `dtp-admin`, which is required to
+pass those roles.
+
+Run the commands below from the repository root. AWS CLI and Node.js/npm must
+be installed, and Docker Desktop must be running to build and push container
+images. Install the OpenLayers dependencies with `npm.cmd --prefix frontend-ol ci`
+before the application deployment; the OpenLayers deployer does not install them.
+The MapLibre deployer runs `npm.cmd ci` if its dependencies are missing.
+
+#### 1. Authenticate and verify the AWS account
+
+```powershell
+aws sso login --profile dtp-admin
+aws sts get-caller-identity --profile dtp-admin --query Account --output text
+```
+
+The returned account must be `376640768813`. Do not proceed if it differs.
+
+#### 2. Review the deployment configuration
+
+Create the ignored local configuration **only if it does not already exist**:
+
+```powershell
+if (-not (Test-Path .\infra\dtp.env)) {
+    Copy-Item .\infra\dtp.env.example .\infra\dtp.env
+}
+```
+
+Review the profile, account, existing VPC/subnets, platform-provisioned role
+ARNs, RDS sizing and `IMPORT_BUCKET` against
+[infra/dtp.env.example](infra/dtp.env.example). Keep `ASSIGN_PUBLIC_IP=DISABLED`.
+For a fresh deployment, leave the database endpoint/password placeholders:
+database provisioning fills them automatically. Do not overwrite an existing
+deployment configuration with the template.
+
+#### 3. Provision RDS and the source bucket
+
+Provision the encrypted, private, Multi-AZ RDS instance and permanent private
+source-data bucket. This writes the database's generated endpoint and managed
+password into the ignored configuration without
+printing the password:
+
+```powershell
+.\infra\deploy-dtp.ps1 -Phase Database
+```
+
+RDS creation commonly takes 10–20 minutes. The source bucket blocks public
+access and enables default SSE-S3 encryption.
+
+#### 4. Package and upload the source data
+
+For a File Geodatabase, preserve the `.gdb` directory inside the ZIP. Replace
+the example local paths and S3 object key with your actual dataset, and use the
+bucket configured by `IMPORT_BUCKET`:
+
+```powershell
+Compress-Archive -Path .\data\au_vic_dtp_ingestion.gdb -DestinationPath .\data\au_vic_dtp_ingestion.gdb.zip
+aws s3 cp .\data\au_vic_dtp_ingestion.gdb.zip s3://gis-postgis-source-376640768813/source/au_vic_dtp_ingestion.gdb.zip --profile dtp-admin --region ap-southeast-2
+aws s3 ls s3://gis-postgis-source-376640768813/source/ --profile dtp-admin --region ap-southeast-2
+```
+
+The source object remains in S3 after import. Do not upload database credentials.
+
+#### 5. Configure the import manifest
+
+Copy [infra/import-manifest.example.json](infra/import-manifest.example.json)
+to the ignored local working manifest:
+
+```powershell
+Copy-Item .\infra\import-manifest.example.json .\infra\import-manifest.json
+```
+
+Edit the working manifest to set:
+
+- `s3Bucket`: the configured `IMPORT_BUCKET`.
+- `s3Key`: the exact uploaded object key, without an `s3://` prefix.
+- `archive`: `zip` for an archive or `none` for a directly readable file.
+- `datasetPathSuffix`: the dataset path inside the archive, for example
+  `/au_vic_dtp_ingestion.gdb`.
+- `layers`: the actual source layer names and their required target table names.
+
+All target tables are written to the `public` schema. See
+[infra/S3-DATA-IMPORT.md](infra/S3-DATA-IMPORT.md) for dataset details.
+
+#### 6. Import S3 data into PostGIS
+
+```powershell
+.\infra\deploy-dtp.ps1 -Phase Import
+```
+
+The disposable VPC-local GDAL importer enables PostGIS, **overwrites the
+configured target tables**, creates GiST spatial indexes and runs `ANALYZE`.
+Proceed only after the import succeeds.
+
+Its `finally` cleanup attempts to remove the ECR repository/image, ECS
+cluster/task definition, task security group, temporary RDS ingress rule and
+CloudWatch log group after success or failure. The private S3 source object,
+database secret and imported tables remain. If cleanup reports a warning,
+resolve the named leftover resource before continuing; forcibly closing the
+orchestration process can prevent cleanup from running.
+
+To inspect the database without reimporting or replacing tables:
+
+```powershell
+.\infra\import-s3-to-postgis.ps1 -InspectOnly
+```
+
+This runs a disposable VPC-local task with server-enforced read-only
+transactions. It reports the database/PostGIS version, public spatial tables,
+geometry types, SRIDs, table/index sizes, exact row counts for the manifest's
+target tables, and public table columns. It does not change the existing
+database secret or download the source archive. Temporary AWS resources are
+cleaned up using the same `finally` cleanup as the importer.
+
+#### 7. Deploy the API and both frontends
+
+Deploy the shared API, MapLibre and OpenLayers applications. Each frontend uses
+its own private S3 bucket, CloudFront distribution and Origin Access Control.
+The orchestrator captures the API and both CloudFront URLs, updates the private
+config, redeploys the same API image for both CORS origins, and runs
+health/readiness checks:
+
+```powershell
+.\infra\deploy-dtp.ps1 -Phase Application
+```
+
+This phase is safe to rerun after an OpenLayers-only deployment: it adds the
+MapLibre resources without replacing the OpenLayers distribution or reimporting
+data. `FRONTEND_URL` stores the MapLibre origin and `FRONTEND_OL_URL` stores the
+OpenLayers origin. `FRONTEND_API_URL` and `FRONTEND_OL_API_URL` both point to the
+shared DTP API. Both deployers set production API URLs for the build and restore
+the previous build environment afterward.
+
+#### 8. Deploy and build the tile cache
+
+After the API discovers every cache-enabled layer, deploy the Batch/CDN
+infrastructure, inject the DTP CDN into both generated frontend runtime configs,
+redeploy both frontends, and submit Web Mercator cache jobs for MapLibre and
+native Vicgrid cache jobs for OpenLayers:
+
+```powershell
+.\infra\deploy-dtp.ps1 -Phase TileCache
+```
+
+The cache jobs run asynchronously. Monitor AWS Batch until **all submitted jobs
+succeed** before final verification. Use `-SkipTileBuild` with this phase to
+provision cache infrastructure without submitting jobs.
+
+#### 9. Verify the deployment
+
+```powershell
+.\infra\deploy-dtp.ps1 -Phase Verify
+```
+
+This checks API health, database readiness, layer discovery and both frontends'
+HTTP availability. Also open each deployed frontend and confirm the configured
+layers render correctly.
+
+#### Optional: run all phases together
+
+`-Phase All` provisions the database and bucket, then stops at the source-upload
+checkpoint. Once the source object and working manifest are ready:
+
+```powershell
+.\infra\deploy-dtp.ps1 -Phase All -SourceUploaded
+```
+
+This reruns the import, replacing the configured tables, then deploys the
+application and submits tile-cache jobs. Tile jobs still run asynchronously;
+wait for them to succeed and rerun `-Phase Verify` afterward. Prefer the numbered
+phases for the first deployment to isolate failures.
+
+#### Quick command checklist
+
+Run from the repository root. This is a first-deployment checklist, not a
+single script to paste and run unattended: stop at each checkpoint below.
+Docker Desktop must be running for container builds.
+
+```powershell
+# 1. Authenticate and check the account (must be 376640768813).
+aws login --profile dtp-admin
+aws sts get-caller-identity --profile dtp-admin --query Account --output text
+
+# 2. Create local config only if missing; review it before proceeding.
+if (-not (Test-Path .\infra\dtp.env)) {
+  Copy-Item .\infra\dtp.env.example .\infra\dtp.env
+}
+code .\infra\dtp.env
+
+# 3. Install both frontends' dependencies.
+npm.cmd --prefix frontend ci
+npm.cmd --prefix frontend-ol ci
+
+# 4. Provision private RDS and the source bucket; wait for completion.
+.\infra\deploy-dtp.ps1 -Phase Database
+
+# 5. Package and upload data (replace local paths/key if different).
+Compress-Archive -Path .\data\au_vic_dtp_ingestion.gdb -DestinationPath .\data\au_vic_dtp_ingestion.gdb.zip
+aws s3 cp .\data\au_vic_dtp_ingestion.gdb.zip s3://gis-postgis-source-376640768813/source/au_vic_dtp_ingestion.gdb.zip --profile dtp-admin --region ap-southeast-2
+aws s3 ls s3://gis-postgis-source-376640768813/source/ --profile dtp-admin --region ap-southeast-2
+
+# 6. Create the manifest only if missing; edit source/target layers and S3 key.
+if (-not (Test-Path .\infra\import-manifest.json)) {
+  Copy-Item .\infra\import-manifest.example.json .\infra\import-manifest.json
+}
+code .\infra\import-manifest.json
+
+# STOP: confirm the upload, config and manifest before importing.
+# 7. Import once. This OVERWRITES the manifest's target tables.
+.\infra\deploy-dtp.ps1 -Phase Import
+
+# STOP: continue only after import succeeds and temporary cleanup completes.
+# 8. Deploy the shared API, MapLibre and OpenLayers; configure both CORS origins.
+.\infra\deploy-dtp.ps1 -Phase Application
+
+# 9. Deploy the tile CDN/Batch infrastructure and submit both cache projections.
+.\infra\deploy-dtp.ps1 -Phase TileCache
+
+# STOP: wait until ALL submitted AWS Batch jobs show SUCCEEDED.
+# 10. Verify the API/database and both frontend HTTP endpoints.
+.\infra\deploy-dtp.ps1 -Phase Verify
+```
+
+After verification, open both frontend URLs printed by the Application phase
+and check that layers render. Do not rerun Import unless you intend to replace
+the tables, or TileCache while jobs are active (it submits another set).
+
+For an **existing deployment**, run only the phase you need: Application for
+API/frontend changes, TileCache for cache deployment/builds, or Verify for
+read-only availability checks. If cache jobs are already running, wait for them
+to succeed and run only Verify.
+
 ### Separate AWS deployment (instructions only)
 
-**No OpenLayers AWS deployment has been executed as part of this change, and
-no new OpenLayers CloudFront URL has been issued or verified.** The existing
-MapLibre deployment and endpoint documentation above remain applicable.
+For DTP, use the phased deployment above to deploy both frontends. The existing
+MapLibre deployment and endpoint documentation elsewhere describe a separate
+deployment; do not reuse those account-specific URLs for DTP. The instructions
+below remain available for deploying only the OpenLayers sibling independently.
 
 Prerequisites: deploy the shared backend's `/tiles/grids/vicgrid` and
 `/tiles/vicgrid/{layer}/{z}/{x}/{y}.mvt` routes first; verify them on the intended
@@ -759,8 +997,9 @@ authentication. Allow time for CloudFront deployment and cache invalidation.
 
 
 ### URLS
-Open Layers Frontend: https://d2fwf1q6xmjgmr.cloudfront.net/
-Maplibre Frontend: https://d3m770p4wtb32m.cloudfront.net/
-Backend API URL: https://r554gl2g2j.execute-api.ap-southeast-2.amazonaws.com/health
+MapLibre deployed: https://d22csb429krh23.cloudfront.net
+OpenLayers deployed: https://dr4ecz0yotv37.cloudfront.net
+Backend API URL: https://19bhvk2ypd.execute-api.ap-southeast-2.amazonaws.com
 
 Serverless Setup FrontEnd: https://d2343zgqxmbmvm.cloudfront.net/
+Serverless API: https://xwcbfdedow5kqa2roja44nzmle0zqfvn.lambda-url.ap-southeast-2.on.aws

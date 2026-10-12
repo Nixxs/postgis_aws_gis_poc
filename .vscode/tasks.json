@@ -67,6 +67,21 @@
 			"args": [],
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "Compare spatial query endpoints",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\performance\\compare-spatial-query.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

@@ -218,8 +218,13 @@ __marimo__/
 .streamlit/secrets.toml
 
 *.env
+infra/dtp.env
+infra/import-manifest.json
 *data/
 global-bundle.pem
 
 *.env.development
 *.env.production
+
+# Generated API performance results
+performance/results/

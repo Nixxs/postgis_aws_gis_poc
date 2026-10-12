@@ -1,0 +1,28 @@
+{
+  "s3Bucket": "gis-postgis-source-376640768813",
+  "s3Key": "source/au_vic_dtp_ingestion.gdb.zip",
+  "archive": "zip",
+  "datasetPathSuffix": "/au_vic_dtp_ingestion.gdb",
+  "layers": [
+    {
+      "source": "au_vic_dtp_planning_scheme_all",
+      "target": "au_vic_dtp_planning_scheme_all"
+    },
+    {
+      "source": "au_vic_dtp_env_environmental_significance",
+      "target": "au_vic_dtp_env_environmental_significance"
+    },
+    {
+      "source": "au_vic_dtp_env_significant_landscape",
+      "target": "au_vic_dtp_env_significant_landscape"
+    },
+    {
+      "source": "au_vic_dtp_env_vegetation_protection",
+      "target": "au_vic_dtp_env_vegetation_protection"
+    },
+    {
+      "source": "au_vic_dtp_parcel",
+      "target": "au_vic_dtp_parcel"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $env:AWS_PAGER = ""
+. (Join-Path $PSScriptRoot "docker-deployment-helpers.ps1")
 
 function Import-DotEnv([string]$Path) {
     if (-not (Test-Path $Path)) {
@@ -39,18 +40,21 @@ function Invoke-Aws([string[]]$Arguments) {
     $maxAttempts = 5
     for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
         $previousErrorActionPreference = $ErrorActionPreference
+        $errorFile = [System.IO.Path]::GetTempFileName()
         try {
             $ErrorActionPreference = "Continue"
-            $result = (& aws @Arguments --profile $env:AWS_PROFILE --region $env:AWS_REGION --no-cli-pager 2>&1 | Out-String).Trim()
+            $result = (& aws @Arguments --profile $env:AWS_PROFILE --region $env:AWS_REGION --no-cli-pager 2>$errorFile | Out-String).Trim()
             $exitCode = $LASTEXITCODE
+            $errorText = [System.IO.File]::ReadAllText($errorFile).Trim()
         }
         finally {
             $ErrorActionPreference = $previousErrorActionPreference
+            Remove-Item $errorFile -Force -ErrorAction SilentlyContinue
         }
 
         if ($exitCode -eq 0) { return $result }
 
-        $isTransient = $result -match "TooManyRequests|Throttl|RequestLimitExceeded|ServiceUnavailable"
+        $isTransient = "$errorText`n$result" -match "TooManyRequests|Throttl|RequestLimitExceeded|ServiceUnavailable"
         if ($isTransient -and $attempt -lt $maxAttempts) {
             $delaySeconds = [Math]::Pow(2, $attempt)
             Write-Host "AWS request was throttled; retrying in $delaySeconds seconds ($attempt/$maxAttempts)..."
@@ -58,14 +62,20 @@ function Invoke-Aws([string[]]$Arguments) {
             continue
         }
 
-        throw "AWS command failed: aws $($Arguments -join ' ')`n$result"
+        throw "AWS command failed: aws $($Arguments -join ' ')`n$errorText`n$result"
     }
 }
 
 function Get-AwsValue([string[]]$Arguments) {
-    $value = Invoke-Aws -Arguments ($Arguments + @("--output", "text"))
-    if ($value -eq "None") { return "" }
-    return $value
+    # JSON queries operate on combined pages rather than producing per-page None values.
+    $json = Invoke-Aws -Arguments ($Arguments + @("--output", "json"))
+    $value = ConvertFrom-Json -InputObject $json
+    if ($null -eq $value) { return "" }
+    if ($value -isnot [string] -and $value -isnot [ValueType]) {
+        throw "AWS scalar lookup returned a collection instead of a single value."
+    }
+    if ([string]$value -match '[\r\n]') { throw "AWS scalar lookup returned a multiline value." }
+    return [string]$value
 }
 
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
@@ -140,6 +150,10 @@ $account = Get-AwsValue -Arguments @("sts", "get-caller-identity", "--query", "A
 if ($account -ne $env:AWS_ACCOUNT_ID) {
     throw "AWS profile points to account $account; expected $($env:AWS_ACCOUNT_ID)."
 }
+if (-not $SkipBuild) {
+    Write-Host "Checking Docker Linux engine..."
+    Invoke-DeploymentDocker @("info", "--format", "{{.OSType}}")
+}
 
 $repositoryUri = Get-AwsValue -Arguments @(
     "ecr", "describe-repositories",
@@ -158,15 +172,9 @@ if (-not $SkipBuild) {
     Write-Host "Building $imageUri..."
     Push-Location $apiRoot
     try {
-        & docker build --platform linux/amd64 --provenance=false --tag $imageUri .
-        if ($LASTEXITCODE -ne 0) { throw "Docker build failed." }
-
+        Invoke-DeploymentDocker @("build", "--platform", "linux/amd64", "--provenance=false", "--tag", $imageUri, ".")
         $loginPassword = Invoke-Aws -Arguments @("ecr", "get-login-password")
-        $loginPassword | & docker login --username AWS --password-stdin $registry
-        if ($LASTEXITCODE -ne 0) { throw "Docker registry login failed." }
-
-        & docker push $imageUri
-        if ($LASTEXITCODE -ne 0) { throw "Docker push failed." }
+        Push-EcrDeploymentImage $registry $imageUri $loginPassword
     }
     finally {
         Pop-Location
@@ -211,65 +219,84 @@ finally {
 
 $executionRoleName = "gis-postgis-api-execution-role"
 $taskRoleName = "gis-postgis-api-task-role"
-$trustFile = Join-Path ([System.IO.Path]::GetTempPath()) "ecs-trust-$PID.json"
-$trustDocument = @{
-    Version = "2012-10-17"
-    Statement = @(@{
-        Effect = "Allow"
-        Principal = @{ Service = "ecs-tasks.amazonaws.com" }
-        Action = "sts:AssumeRole"
-    })
+$executionRoleArn = $env:API_EXECUTION_ROLE_ARN
+$taskRoleArn = $env:API_TASK_ROLE_ARN
+if ([bool]$executionRoleArn -ne [bool]$taskRoleArn) {
+    throw "Set both API_EXECUTION_ROLE_ARN and API_TASK_ROLE_ARN, or leave both blank for script-managed IAM roles."
 }
-Write-Utf8NoBom -Path $trustFile -Content ($trustDocument | ConvertTo-Json -Depth 5)
 
-try {
-    foreach ($roleName in @($executionRoleName, $taskRoleName)) {
-        $roleArn = Get-AwsValue -Arguments @(
-            "iam", "list-roles", "--query", "Roles[?RoleName=='$roleName'].Arn | [0]"
-        )
-        if (-not $roleArn) {
-            $createRoleArguments = @(
-                "iam", "create-role", "--role-name", $roleName,
-                "--assume-role-policy-document", "file://$trustFile",
-                "--tags", $tagArgs[0], $tagArgs[1]
-            )
-            if ($env:PERMISSIONS_BOUNDARY_ARN) {
-                $createRoleArguments += @("--permissions-boundary", $env:PERMISSIONS_BOUNDARY_ARN)
-            }
-            [void](Invoke-Aws -Arguments $createRoleArguments)
+if ($executionRoleArn) {
+    $expectedRolePrefix = "arn:aws:iam::$($env:AWS_ACCOUNT_ID):role/"
+    foreach ($roleArn in @($executionRoleArn, $taskRoleArn)) {
+        if (-not $roleArn.StartsWith($expectedRolePrefix, [System.StringComparison]::Ordinal)) {
+            throw "Pre-provisioned API role ARN must belong to account $($env:AWS_ACCOUNT_ID): $roleArn"
         }
     }
+    Write-Host "Using pre-provisioned API IAM roles; skipping IAM role and policy management."
 }
-finally {
-    Remove-Item $trustFile -Force -ErrorAction SilentlyContinue
-}
+else {
+    $trustFile = Join-Path ([System.IO.Path]::GetTempPath()) "ecs-trust-$PID.json"
+    $trustDocument = @{
+        Version = "2012-10-17"
+        Statement = @(@{
+            Effect = "Allow"
+            Principal = @{ Service = "ecs-tasks.amazonaws.com" }
+            Action = "sts:AssumeRole"
+        })
+    }
+    Write-Utf8NoBom -Path $trustFile -Content ($trustDocument | ConvertTo-Json -Depth 5)
 
-[void](Invoke-Aws -Arguments @("iam", "wait", "role-exists", "--role-name", $executionRoleName))
-[void](Invoke-Aws -Arguments @("iam", "wait", "role-exists", "--role-name", $taskRoleName))
+    try {
+        foreach ($roleName in @($executionRoleName, $taskRoleName)) {
+            $roleArn = Get-AwsValue -Arguments @(
+                "iam", "list-roles", "--query", "Roles[?RoleName=='$roleName'].Arn | [0]"
+            )
+            if (-not $roleArn) {
+                $createRoleArguments = @(
+                    "iam", "create-role", "--role-name", $roleName,
+                    "--assume-role-policy-document", "file://$trustFile",
+                    "--tags", $tagArgs[0], $tagArgs[1]
+                )
+                if ($env:PERMISSIONS_BOUNDARY_ARN) {
+                    $createRoleArguments += @("--permissions-boundary", $env:PERMISSIONS_BOUNDARY_ARN)
+                }
+                [void](Invoke-Aws -Arguments $createRoleArguments)
+            }
+        }
+    }
+    finally {
+        Remove-Item $trustFile -Force -ErrorAction SilentlyContinue
+    }
 
-[void](Invoke-Aws -Arguments @(
-    "iam", "attach-role-policy", "--role-name", $executionRoleName,
-    "--policy-arn", "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-))
-
-$secretPolicyFile = Join-Path ([System.IO.Path]::GetTempPath()) "ecs-secret-policy-$PID.json"
-$secretPolicy = @{
-    Version = "2012-10-17"
-    Statement = @(@{
-        Effect = "Allow"
-        Action = @("secretsmanager:GetSecretValue")
-        Resource = $secretArn
-    })
-}
-Write-Utf8NoBom -Path $secretPolicyFile -Content ($secretPolicy | ConvertTo-Json -Depth 5)
-try {
+    [void](Invoke-Aws -Arguments @("iam", "wait", "role-exists", "--role-name", $executionRoleName))
+    [void](Invoke-Aws -Arguments @("iam", "wait", "role-exists", "--role-name", $taskRoleName))
     [void](Invoke-Aws -Arguments @(
-        "iam", "put-role-policy", "--role-name", $executionRoleName,
-        "--policy-name", "ReadGisApiSecret", "--policy-document", "file://$secretPolicyFile"
+        "iam", "attach-role-policy", "--role-name", $executionRoleName,
+        "--policy-arn", "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
     ))
-}
-finally {
-    Remove-Item $secretPolicyFile -Force -ErrorAction SilentlyContinue
+
+    $secretPolicyFile = Join-Path ([System.IO.Path]::GetTempPath()) "ecs-secret-policy-$PID.json"
+    $secretPolicy = @{
+        Version = "2012-10-17"
+        Statement = @(@{
+            Effect = "Allow"
+            Action = @("secretsmanager:GetSecretValue")
+            Resource = $secretArn
+        })
+    }
+    Write-Utf8NoBom -Path $secretPolicyFile -Content ($secretPolicy | ConvertTo-Json -Depth 5)
+    try {
+        [void](Invoke-Aws -Arguments @(
+            "iam", "put-role-policy", "--role-name", $executionRoleName,
+            "--policy-name", "ReadGisApiSecret", "--policy-document", "file://$secretPolicyFile"
+        ))
+    }
+    finally {
+        Remove-Item $secretPolicyFile -Force -ErrorAction SilentlyContinue
+    }
+
+    $executionRoleArn = "arn:aws:iam::$($env:AWS_ACCOUNT_ID):role/$executionRoleName"
+    $taskRoleArn = "arn:aws:iam::$($env:AWS_ACCOUNT_ID):role/$taskRoleName"
 }
 
 $logGroup = "/ecs/$($env:TASK_FAMILY)"
@@ -294,8 +321,8 @@ $containerSecrets = @("DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME",
 }
 $taskDefinition = @{
     family = $env:TASK_FAMILY
-    taskRoleArn = "arn:aws:iam::$($env:AWS_ACCOUNT_ID):role/$taskRoleName"
-    executionRoleArn = "arn:aws:iam::$($env:AWS_ACCOUNT_ID):role/$executionRoleName"
+    taskRoleArn = $taskRoleArn
+    executionRoleArn = $executionRoleArn
     networkMode = "awsvpc"
     requiresCompatibilities = @("FARGATE")
     cpu = "1024"

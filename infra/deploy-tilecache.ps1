@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $env:AWS_PAGER = ""
+. (Join-Path $PSScriptRoot "docker-deployment-helpers.ps1")
 
 function Import-DotEnv([string]$Path) {
     if (-not (Test-Path $Path)) {
@@ -43,24 +44,43 @@ function Set-DefaultSetting([string]$Name, [string]$Value) {
 
 function Invoke-Aws([string[]]$Arguments) {
     $previousErrorActionPreference = $ErrorActionPreference
+    $errorFile = [System.IO.Path]::GetTempFileName()
     try {
         $ErrorActionPreference = "Continue"
-        $result = (& aws @Arguments --profile $env:AWS_PROFILE --region $env:AWS_REGION --no-cli-pager 2>&1 | Out-String).Trim()
+        $result = (& aws @Arguments --profile $env:AWS_PROFILE --region $env:AWS_REGION --no-cli-pager 2>$errorFile | Out-String).Trim()
         $exitCode = $LASTEXITCODE
+        $errorText = [System.IO.File]::ReadAllText($errorFile).Trim()
     }
     finally {
         $ErrorActionPreference = $previousErrorActionPreference
+        Remove-Item $errorFile -Force -ErrorAction SilentlyContinue
     }
     if ($exitCode -ne 0) {
-        throw "AWS command failed: aws $($Arguments -join ' ')`n$result"
+        throw "AWS command failed: aws $($Arguments -join ' ')`n$errorText`n$result"
     }
     return $result
 }
 
 function Get-AwsValue([string[]]$Arguments) {
-    $value = Invoke-Aws -Arguments ($Arguments + @("--output", "text"))
-    if ($value -eq "None") { return "" }
-    return $value
+    $json = Invoke-Aws -Arguments ($Arguments + @("--output", "json"))
+    $value = ConvertFrom-Json -InputObject $json
+    if ($null -eq $value) { return "" }
+    if ($value -isnot [string] -and $value -isnot [ValueType]) {
+        throw "AWS scalar lookup returned a collection instead of a single value."
+    }
+    if ([string]$value -match '[\r\n]') { throw "AWS scalar lookup returned a multiline value." }
+    return [string]$value
+}
+
+function New-TileCacheBucketConfiguration([string]$Region) {
+    $document = @{
+        Tags = @(
+            @{ Key = "lz:CostCenter"; Value = "PlanningSpatial" },
+            @{ Key = "lz:BackupPlan"; Value = "Daily" }
+        )
+    }
+    if ($Region -ne "us-east-1") { $document.LocationConstraint = $Region }
+    return $document
 }
 
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
@@ -120,6 +140,11 @@ if ($account -ne $env:AWS_ACCOUNT_ID) {
     throw "AWS profile points to account $account; expected $($env:AWS_ACCOUNT_ID)."
 }
 
+if (-not $SkipBuild) {
+    Write-Host "Checking Docker Linux engine..."
+    Invoke-DeploymentDocker @("info", "--format", "{{.OSType}}")
+}
+
 $repositoryUri = Get-AwsValue @(
     "ecr", "describe-repositories",
     "--query", "repositories[?repositoryName=='$($env:TILECACHE_ECR_REPOSITORY)'].repositoryUri | [0]"
@@ -136,13 +161,9 @@ if (-not $SkipBuild) {
     Write-Host "Building and pushing $imageUri..."
     Push-Location $tilecacheRoot
     try {
-        & docker build --platform linux/amd64 --provenance=false --tag $imageUri .
-        if ($LASTEXITCODE -ne 0) { throw "Docker build failed." }
+        Invoke-DeploymentDocker @("build", "--platform", "linux/amd64", "--provenance=false", "--tag", $imageUri, ".")
         $password = Invoke-Aws @("ecr", "get-login-password")
-        $password | & docker login --username AWS --password-stdin $registry
-        if ($LASTEXITCODE -ne 0) { throw "Docker registry login failed." }
-        & docker push $imageUri
-        if ($LASTEXITCODE -ne 0) { throw "Docker push failed." }
+        Push-EcrDeploymentImage $registry $imageUri $password
     }
     finally {
         Pop-Location
@@ -152,15 +173,15 @@ if (-not $SkipBuild) {
 Write-Host "Configuring private tile bucket $($env:TILECACHE_BUCKET)..."
 $bucketExists = Get-AwsValue @("s3api", "list-buckets", "--query", "Buckets[?Name=='$($env:TILECACHE_BUCKET)'].Name | [0]")
 if (-not $bucketExists) {
-    if ($env:AWS_REGION -eq "us-east-1") {
-        [void](Invoke-Aws @("s3api", "create-bucket", "--bucket", $env:TILECACHE_BUCKET))
-    }
-    else {
+    $bucketCreateFile = Join-Path ([System.IO.Path]::GetTempPath()) "tilecache-bucket-create-$([Guid]::NewGuid().ToString('N')).json"
+    Write-Utf8NoBom $bucketCreateFile ((New-TileCacheBucketConfiguration $env:AWS_REGION) | ConvertTo-Json -Depth 5)
+    try {
         [void](Invoke-Aws @(
             "s3api", "create-bucket", "--bucket", $env:TILECACHE_BUCKET,
-            "--create-bucket-configuration", "LocationConstraint=$($env:AWS_REGION)"
+            "--create-bucket-configuration", "file://$bucketCreateFile"
         ))
     }
+    finally { Remove-Item $bucketCreateFile -Force -ErrorAction SilentlyContinue }
 }
 [void](Invoke-Aws @(
     "s3api", "put-public-access-block", "--bucket", $env:TILECACHE_BUCKET,
@@ -195,57 +216,73 @@ finally {
 }
 
 $secretArn = Get-AwsValue @(
-    "secretsmanager", "list-secrets", "--filters", "Key=name,Values=$($env:SECRET_NAME)",
-    "--query", "SecretList[?Name=='$($env:SECRET_NAME)'].ARN | [0]"
+    "secretsmanager", "describe-secret", "--secret-id", $env:SECRET_NAME,
+    "--query", "ARN"
 )
 if (-not $secretArn) { throw "Secrets Manager secret '$($env:SECRET_NAME)' does not exist. Deploy the API first." }
 
-$trustFile = Join-Path ([System.IO.Path]::GetTempPath()) "tilecache-trust-$PID.json"
-Write-Utf8NoBom $trustFile (@{
-    Version = "2012-10-17"
-    Statement = @(@{ Effect = "Allow"; Principal = @{ Service = "ecs-tasks.amazonaws.com" }; Action = "sts:AssumeRole" })
-} | ConvertTo-Json -Depth 5)
 $executionRoleName = "gis-postgis-tilecache-execution-role"
 $jobRoleName = "gis-postgis-tilecache-job-role"
-try {
-    $executionRoleArn = New-OrGetRole $executionRoleName $trustFile $tagArgs
-    $jobRoleArn = New-OrGetRole $jobRoleName $trustFile $tagArgs
+$executionRoleArn = $env:TILECACHE_EXECUTION_ROLE_ARN
+$jobRoleArn = $env:TILECACHE_JOB_ROLE_ARN
+if ([bool]$executionRoleArn -ne [bool]$jobRoleArn) {
+    throw "Set both TILECACHE_EXECUTION_ROLE_ARN and TILECACHE_JOB_ROLE_ARN, or leave both blank for script-managed IAM roles."
 }
-finally {
-    Remove-Item $trustFile -Force -ErrorAction SilentlyContinue
+if ($executionRoleArn) {
+    $expectedRolePrefix = "arn:aws:iam::$($env:AWS_ACCOUNT_ID):role/"
+    foreach ($roleArn in @($executionRoleArn, $jobRoleArn)) {
+        if (-not $roleArn.StartsWith($expectedRolePrefix, [System.StringComparison]::Ordinal)) {
+            throw "Pre-provisioned tile-cache role ARN must belong to account $($env:AWS_ACCOUNT_ID): $roleArn"
+        }
+    }
+    Write-Host "Using pre-provisioned tile-cache IAM roles; skipping IAM role and policy management."
 }
-[void](Invoke-Aws @("iam", "wait", "role-exists", "--role-name", $executionRoleName))
-[void](Invoke-Aws @("iam", "wait", "role-exists", "--role-name", $jobRoleName))
-[void](Invoke-Aws @(
-    "iam", "attach-role-policy", "--role-name", $executionRoleName,
-    "--policy-arn", "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-))
+else {
+    $trustFile = Join-Path ([System.IO.Path]::GetTempPath()) "tilecache-trust-$PID.json"
+    Write-Utf8NoBom $trustFile (@{
+        Version = "2012-10-17"
+        Statement = @(@{ Effect = "Allow"; Principal = @{ Service = "ecs-tasks.amazonaws.com" }; Action = "sts:AssumeRole" })
+    } | ConvertTo-Json -Depth 5)
+    try {
+        $executionRoleArn = New-OrGetRole $executionRoleName $trustFile $tagArgs
+        $jobRoleArn = New-OrGetRole $jobRoleName $trustFile $tagArgs
+    }
+    finally {
+        Remove-Item $trustFile -Force -ErrorAction SilentlyContinue
+    }
+    [void](Invoke-Aws @("iam", "wait", "role-exists", "--role-name", $executionRoleName))
+    [void](Invoke-Aws @("iam", "wait", "role-exists", "--role-name", $jobRoleName))
+    [void](Invoke-Aws @(
+        "iam", "attach-role-policy", "--role-name", $executionRoleName,
+        "--policy-arn", "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+    ))
 
-$executionPolicyFile = Join-Path ([System.IO.Path]::GetTempPath()) "tilecache-execution-policy-$PID.json"
-Write-Utf8NoBom $executionPolicyFile (@{
-    Version = "2012-10-17"
-    Statement = @(@{ Effect = "Allow"; Action = @("secretsmanager:GetSecretValue"); Resource = $secretArn })
-} | ConvertTo-Json -Depth 6)
-$jobPolicyFile = Join-Path ([System.IO.Path]::GetTempPath()) "tilecache-job-policy-$PID.json"
-Write-Utf8NoBom $jobPolicyFile (@{
-    Version = "2012-10-17"
-    Statement = @(
-        @{ Effect = "Allow"; Action = @("s3:ListBucket"); Resource = "arn:aws:s3:::$($env:TILECACHE_BUCKET)" },
-        @{ Effect = "Allow"; Action = @("s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"); Resource = "arn:aws:s3:::$($env:TILECACHE_BUCKET)/*" }
-    )
-} | ConvertTo-Json -Depth 6)
-try {
-    [void](Invoke-Aws @(
-        "iam", "put-role-policy", "--role-name", $executionRoleName,
-        "--policy-name", "ReadGisDatabaseSecret", "--policy-document", "file://$executionPolicyFile"
-    ))
-    [void](Invoke-Aws @(
-        "iam", "put-role-policy", "--role-name", $jobRoleName,
-        "--policy-name", "WriteTileCache", "--policy-document", "file://$jobPolicyFile"
-    ))
-}
-finally {
-    Remove-Item $executionPolicyFile, $jobPolicyFile -Force -ErrorAction SilentlyContinue
+    $executionPolicyFile = Join-Path ([System.IO.Path]::GetTempPath()) "tilecache-execution-policy-$PID.json"
+    Write-Utf8NoBom $executionPolicyFile (@{
+        Version = "2012-10-17"
+        Statement = @(@{ Effect = "Allow"; Action = @("secretsmanager:GetSecretValue"); Resource = $secretArn })
+    } | ConvertTo-Json -Depth 6)
+    $jobPolicyFile = Join-Path ([System.IO.Path]::GetTempPath()) "tilecache-job-policy-$PID.json"
+    Write-Utf8NoBom $jobPolicyFile (@{
+        Version = "2012-10-17"
+        Statement = @(
+            @{ Effect = "Allow"; Action = @("s3:ListBucket"); Resource = "arn:aws:s3:::$($env:TILECACHE_BUCKET)" },
+            @{ Effect = "Allow"; Action = @("s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"); Resource = "arn:aws:s3:::$($env:TILECACHE_BUCKET)/*" }
+        )
+    } | ConvertTo-Json -Depth 6)
+    try {
+        [void](Invoke-Aws @(
+            "iam", "put-role-policy", "--role-name", $executionRoleName,
+            "--policy-name", "ReadGisDatabaseSecret", "--policy-document", "file://$executionPolicyFile"
+        ))
+        [void](Invoke-Aws @(
+            "iam", "put-role-policy", "--role-name", $jobRoleName,
+            "--policy-name", "WriteTileCache", "--policy-document", "file://$jobPolicyFile"
+        ))
+    }
+    finally {
+        Remove-Item $executionPolicyFile, $jobPolicyFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 $logGroup = "/aws/batch/$($env:TILECACHE_JOB_DEFINITION)"
@@ -254,9 +291,8 @@ $existingLogGroup = Get-AwsValue @(
     "--query", "logGroups[?logGroupName=='$logGroup'].logGroupName | [0]"
 )
 if (-not $existingLogGroup) {
-    [void](Invoke-Aws @("logs", "create-log-group", "--log-group-name", $logGroup))
     [void](Invoke-Aws @(
-        "logs", "tag-resource", "--resource-arn", "arn:aws:logs:$($env:AWS_REGION):$($env:AWS_ACCOUNT_ID):log-group:$logGroup",
+        "logs", "create-log-group", "--log-group-name", $logGroup,
         "--tags", "lz:CostCenter=PlanningSpatial,lz:BackupPlan=Daily"
     ))
 }
